@@ -68,7 +68,7 @@ def extract_right_page_setsu(pdf, page_num: int) -> List[Dict]:
                 setsu_groups.append(current_setsu)
 
             setsu_name = setsu_match.group(2).replace(' ', '')
-            setsu_amount = int(setsu_match.group(3).replace(',', '')) * 1000
+            setsu_amount = int(setsu_match.group(3).replace(',', ''))  # 千円単位のまま
             remaining = setsu_match.group(4)
 
             current_setsu = {
@@ -130,7 +130,7 @@ def parse_setsumei_lines(lines: List[str], setsu_name: str) -> Dict:
         item_match = re.match(r'^([^\d]+?)\s*([\d,]+)$', line)
         if item_match:
             item_name = item_match.group(1).strip()
-            item_amount = int(item_match.group(2).replace(',', '')) * 1000
+            item_amount = int(item_match.group(2).replace(',', ''))  # 千円単位のまま
 
             # 節名と同じ名前はスキップ（重複防止）
             if item_name == setsu_name:
@@ -200,12 +200,12 @@ def extract_spread_rows(pdf, left_page_num: int, right_page_num: int, y_toleranc
 
 
 def parse_amount(text: str) -> Optional[int]:
-    """金額文字列をパース（千円単位→円）"""
+    """金額文字列をパース（千円単位のまま）"""
     if not text:
         return None
     text = text.replace(',', '').replace('△', '-').replace('千円', '').strip()
     try:
-        return int(text) * 1000
+        return int(text)  # 千円単位のまま
     except:
         return None
 
