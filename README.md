@@ -58,12 +58,74 @@ python split_budget_by_section.py Rn/bugget.pdf Rn/分割 --workers 8
 分割したテキストからJSONを作成します（AI活用推奨）。
 
 ```bash
-# バリデーション実行
+# 個別JSONファイルのバリデーション
 python validate_json.py Rn/json/*.json
 
 # 統合ファイル作成後もバリデーション
 python validate_json.py Rn/json/_merged.json
 ```
+
+## バリデーション詳細
+
+`validate_json.py` は以下のチェックを実行します：
+
+### チェック項目
+
+| チェック | 内容 | デフォルト |
+|---------|------|-----------|
+| **合計値整合性** | 親階層の金額 = 子階層の合計 | 有効 |
+| **負の値** | 金額が負でないか | 有効 |
+| **全年度null** | R6/R7/R8すべてnullはエラー | 有効 |
+| **特定年度null** | 一部年度のみnullはワーニング | 有効 |
+| **構造** | 必須フィールドの存在確認 | 有効（個別JSON用） |
+
+### 使い方
+
+```bash
+# マージ済みJSON（merged_budget.json）の検証
+python validate_json.py merged_budget.json --sums-only
+
+# R8年度のみチェック
+python validate_json.py merged_budget.json --sums-only --year R8
+
+# 個別JSONファイルの検証（構造チェック含む）
+python validate_json.py R8/json/*.json
+
+# チェックを無効化
+python validate_json.py merged_budget.json --sums-only --no-check-values
+```
+
+### オプション一覧
+
+| オプション | 説明 |
+|-----------|------|
+| `--sums-only` | 構造チェックをスキップ（マージ済みJSON用） |
+| `--year R6/R7/R8/all` | チェックする年度を指定 |
+| `--no-check-sums` | 合計値チェックを無効化 |
+| `--no-check-values` | 負の値・null値チェックを無効化 |
+
+### 名称一貫性チェック（LLM利用）
+
+表記ゆれ（全角/半角、スペース有無、略称など）をLLMで検出します。
+
+```bash
+# .env ファイルにAPIキーを設定
+echo 'OPENROUTER_API_KEY=sk-or-v1-xxxxx' > .env
+
+# チェック実行
+python check_name_consistency.py merged_budget.json
+
+# 結果をJSONファイルに出力
+python check_name_consistency.py merged_budget.json --output consistency_report.json
+
+# 別のモデルを使用
+python check_name_consistency.py merged_budget.json --model anthropic/claude-sonnet-4
+```
+
+検出例:
+- `土 地` ↔ `土地`（スペースの有無）
+- `シティプロ` ↔ `シティプロモーション`（略称）
+- `男女共同参` ↔ `男女共同参画`（切り詰め）
 
 ### Step 3: 年度統合JSONの生成
 

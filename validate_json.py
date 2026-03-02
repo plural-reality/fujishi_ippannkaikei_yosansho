@@ -52,6 +52,7 @@ class BudgetJsonValidator:
         self.sum_mismatches: List[dict] = []  # 合計不一致の詳細
         self.negative_values: List[dict] = []  # 負の値
         self.null_issues: List[dict] = []  # Null値の問題
+        self.partial_matches: List[dict] = []  # 部分一致の問題
 
     def error(self, path: str, message: str):
         self.errors.append(ValidationError(path, message, "error"))
@@ -467,6 +468,172 @@ class BudgetJsonValidator:
                     })
 
     # ========================================
+    # 部分一致チェック
+    # ========================================
+
+    def _normalize_space(self, text: str) -> str:
+        """スペースを正規化（全角/半角スペースを除去）"""
+        return text.replace(' ', '').replace('　', '')
+
+    def _check_partial_match(self, name1: str, name2: str) -> Tuple[bool, str]:
+        """
+        2つの名称が部分一致するかチェック
+
+        Returns: (is_match, match_type)
+        match_type: "space_diff", "contains", "none"
+        """
+        if name1 == name2:
+            return False, "none"
+
+        # スペース正規化後に一致
+        norm1 = self._normalize_space(name1)
+        norm2 = self._normalize_space(name2)
+
+        if norm1 == norm2:
+            return True, "space_diff"
+
+        # 一方が他方を含む（短い方が長い方に含まれる）
+        if len(norm1) > 2 and len(norm2) > 2:  # 短すぎる名称は除外
+            if norm1 in norm2 or norm2 in norm1:
+                return True, "contains"
+
+        return False, "none"
+
+    def _collect_names_at_level(self, items: list, level: str, path: str, year_key: str = None) -> List[Tuple[str, str]]:
+        """
+        指定した階層の名称を収集
+
+        Returns: [(name, item_path), ...]
+        """
+        names = []
+        for i, item_obj in enumerate(items):
+            if not isinstance(item_obj, dict) or len(item_obj) != 1:
+                continue
+
+            item_name = list(item_obj.keys())[0]
+            item_data = item_obj[item_name]
+            item_path = f"{path}/{level}[{i}]/{item_name}"
+
+            # year_keyが指定されている場合、その年度にデータがあるかチェック
+            if year_key and isinstance(item_data, dict):
+                value = item_data.get(year_key)
+                if value is None:
+                    continue  # その年度にデータがない場合はスキップ
+
+            names.append((item_name, item_path))
+
+        return names
+
+    def _check_names_in_list(self, names: List[Tuple[str, str]], level: str, year_key: str):
+        """名称リスト内で部分一致をチェック"""
+        checked_pairs = set()
+
+        for i, (name1, path1) in enumerate(names):
+            for j, (name2, path2) in enumerate(names):
+                if i >= j:
+                    continue
+
+                # 既にチェック済みのペアをスキップ
+                pair_key = tuple(sorted([name1, name2]))
+                if pair_key in checked_pairs:
+                    continue
+                checked_pairs.add(pair_key)
+
+                is_match, match_type = self._check_partial_match(name1, name2)
+                if is_match:
+                    self.partial_matches.append({
+                        "level": level,
+                        "year": year_key,
+                        "name1": name1,
+                        "name2": name2,
+                        "path1": path1,
+                        "path2": path2,
+                        "match_type": match_type
+                    })
+
+    def validate_partial_matches(self, filepath: str, year_key: str = "R8") -> List[dict]:
+        """
+        部分一致する名称を検出
+
+        各階層（款/項/目/節）内で、同じ親を持つ要素の名称を比較し、
+        スペースの違いや包含関係を検出する
+
+        Returns: partial_matches
+        """
+        self.partial_matches = []
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            self.error(filepath, f"ファイル読み込みエラー: {e}")
+            return []
+
+        for section_key in ["歳入", "歳出"]:
+            if section_key not in data or "款" not in data[section_key]:
+                continue
+
+            kan_list = data[section_key]["款"]
+            section_path = section_key
+
+            # 款レベルの名称チェック
+            kan_names = self._collect_names_at_level(kan_list, "款", section_path, year_key)
+            self._check_names_in_list(kan_names, "款", year_key)
+
+            # 項レベル以下を再帰的にチェック
+            self._check_partial_matches_recursive(kan_list, section_path, "款", year_key)
+
+        return self.partial_matches
+
+    def _check_partial_matches_recursive(self, items: list, path: str, level: str, year_key: str):
+        """再帰的に部分一致をチェック"""
+        child_level_map = {"款": ("項", "項"), "項": ("目", "目"), "目": ("節", "節"), "節": (None, None)}
+        child_key, child_level = child_level_map.get(level, (None, None))
+
+        for i, item_obj in enumerate(items):
+            if not isinstance(item_obj, dict) or len(item_obj) != 1:
+                continue
+
+            item_name = list(item_obj.keys())[0]
+            item_data = item_obj[item_name]
+            item_path = f"{path}/{level}[{i}]/{item_name}"
+
+            if not isinstance(item_data, dict):
+                continue
+
+            # 子階層の名称をチェック（節以外の場合）
+            if child_key and child_key in item_data and isinstance(item_data[child_key], list):
+                child_list = item_data[child_key]
+
+                # 子階層の名称を収集してチェック
+                child_names = self._collect_names_at_level(child_list, child_level, item_path, year_key)
+                self._check_names_in_list(child_names, child_level, year_key)
+
+                # さらに深い階層へ
+                self._check_partial_matches_recursive(child_list, item_path, child_level, year_key)
+
+            # 説明内の名称もチェック（全てのレベルで実行）
+            if "説明" in item_data and isinstance(item_data["説明"], dict):
+                self._check_setsumei_names(item_data["説明"], f"{item_path}/説明", year_key)
+
+    def _check_setsumei_names(self, setsumei: dict, path: str, year_key: str):
+        """説明内の名称で部分一致をチェック"""
+        names = []
+        for key, value in setsumei.items():
+            # 年度データがあるキーを対象（いずれかの年度にデータがあればよい）
+            if isinstance(value, dict):
+                # R6/R7/R8 のいずれかにデータがあるかチェック
+                has_data = False
+                for year in ["R6", "R7", "R8"]:
+                    if year in value and value.get(year) is not None:
+                        has_data = True
+                        break
+                if has_data:
+                    names.append((key, f"{path}/{key}"))
+
+        self._check_names_in_list(names, "説明", year_key)
+
+    # ========================================
     # 負の値チェック & Null値チェック
     # ========================================
 
@@ -572,7 +739,13 @@ def main():
     parser.add_argument(
         "--check-sums", "-s",
         action="store_true",
-        help="階層間の合計値整合性をチェック (マージ済みJSON用)"
+        default=True,
+        help="階層間の合計値整合性をチェック (デフォルト: 有効)"
+    )
+    parser.add_argument(
+        "--no-check-sums",
+        action="store_true",
+        help="合計値チェックを無効化"
     )
     parser.add_argument(
         "--year", "-y",
@@ -588,10 +761,27 @@ def main():
     parser.add_argument(
         "--check-values", "-v",
         action="store_true",
-        help="負の値チェックとNull値チェックを実行"
+        default=True,
+        help="負の値チェックとNull値チェックを実行 (デフォルト: 有効)"
+    )
+    parser.add_argument(
+        "--no-check-values",
+        action="store_true",
+        help="値チェックを無効化"
+    )
+    parser.add_argument(
+        "--check-names", "-n",
+        action="store_true",
+        help="部分一致する名称をチェック（スペースの違い、包含関係）"
     )
 
     args = parser.parse_args()
+
+    # --no-* オプションの処理
+    if args.no_check_sums:
+        args.check_sums = False
+    if args.no_check_values:
+        args.check_values = False
 
     validator = BudgetJsonValidator(check_sums=args.check_sums)
     total_files = 0
@@ -600,6 +790,7 @@ def main():
     all_mismatches = []
     all_negative_values = []
     all_null_issues = []
+    all_partial_matches = []
 
     for filepath in args.files:
         total_files += 1
@@ -632,6 +823,13 @@ def main():
             all_negative_values.extend(negative_values)
             all_null_issues.extend(null_issues)
 
+        # 部分一致チェック (--check-names が指定された場合)
+        partial_matches = []
+        if args.check_names:
+            year_to_check = args.year if args.year != "all" else "R8"
+            partial_matches = validator.validate_partial_matches(filepath, year_to_check)
+            all_partial_matches.extend(partial_matches)
+
         # 結果判定
         structure_ok = args.sums_only or is_valid
         sums_ok = len(mismatches) == 0
@@ -647,6 +845,7 @@ def main():
             negative_count = len(negative_values)
             null_error_count = len([n for n in null_issues if n["severity"] == "error"])
             null_warn_count = len([n for n in null_issues if n["severity"] == "warning"])
+            partial_match_count = len(partial_matches)
             parts = []
             if error_count > 0:
                 parts.append(f"{error_count} errors")
@@ -660,6 +859,8 @@ def main():
                 parts.append(f"{null_error_count} all-null errors")
             if null_warn_count > 0:
                 parts.append(f"{null_warn_count} partial-null warnings")
+            if partial_match_count > 0:
+                parts.append(f"{partial_match_count} partial name matches")
             print(f"✗ {filepath} ({', '.join(parts)})")
 
     # サマリー
@@ -719,6 +920,29 @@ def main():
             print(f"  {n['path']}: {', '.join(n['years'])}がnull")
         if len(null_warnings) > 30:
             print(f"  ... 他 {len(null_warnings) - 30} 件")
+
+    # 部分一致の詳細
+    if all_partial_matches:
+        print(f"\n--- 部分一致する名称 ({len(all_partial_matches)}件) [WARNING] ---")
+        # match_typeごとに分類
+        space_diff = [m for m in all_partial_matches if m["match_type"] == "space_diff"]
+        contains = [m for m in all_partial_matches if m["match_type"] == "contains"]
+
+        if space_diff:
+            print(f"\n  [スペースの違い] ({len(space_diff)}件)")
+            for m in space_diff[:20]:
+                print(f"    [{m['year']}] {m['level']}: 「{m['name1']}」 vs 「{m['name2']}」")
+                print(f"         {m['path1']}")
+            if len(space_diff) > 20:
+                print(f"    ... 他 {len(space_diff) - 20} 件")
+
+        if contains:
+            print(f"\n  [包含関係] ({len(contains)}件)")
+            for m in contains[:20]:
+                print(f"    [{m['year']}] {m['level']}: 「{m['name1']}」 vs 「{m['name2']}」")
+                print(f"         {m['path1']}")
+            if len(contains) > 20:
+                print(f"    ... 他 {len(contains) - 20} 件")
 
     # 終了コード
     has_errors = len(errors_only) > 0
