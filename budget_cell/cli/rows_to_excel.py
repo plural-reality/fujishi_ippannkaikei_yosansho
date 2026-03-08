@@ -29,6 +29,11 @@ def main() -> None:
 
     rows = read_rows_ndjson(sys.stdin)
     _ = (
+        rows
+        if rows
+        else parser.error("no FlatRow records received on stdin; upstream stage may have failed")
+    )
+    _ = (
         sys.stdout.buffer.write(write_rows_to_excel_bytes(rows, layout=layout))
         if args.dst == "-"
         else write_rows_to_excel_path(rows, args.dst, layout=layout)

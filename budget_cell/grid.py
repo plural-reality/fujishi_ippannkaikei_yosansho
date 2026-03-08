@@ -18,6 +18,11 @@ from budget_cell.types import Grid, Line, PageGeometry, Word
 # Clustering
 # ---------------------------------------------------------------------------
 
+_FALLBACK_COL_RATIOS: tuple[float, ...] = (
+    0.025, 0.087, 0.140, 0.193, 0.246, 0.299,
+    0.351, 0.404, 0.458, 0.534, 0.606, 0.665, 0.968,
+)
+
 def _cluster_values(values: Sequence[float], threshold: float) -> tuple[float, ...]:
     """Merge nearby float values into clusters, returning representative (min) of each."""
     sorted_vals = sorted(values)
@@ -65,7 +70,14 @@ def build_grid(
     Column boundaries come from vertical PDF lines.
     Row boundaries come from text Y-coordinate clustering.
     """
-    col_boundaries = _vertical_line_xs(geom.lines)
+    line_cols = _vertical_line_xs(geom.lines)
+    col_boundaries = (
+        line_cols
+        if line_cols
+        else tuple(round(geom.width * r, 1) for r in _FALLBACK_COL_RATIOS)
+        if len(geom.words) >= 20
+        else ()
+    )
     pdf_h_lines = _horizontal_line_ys(geom.lines)
 
     table_top = min(pdf_h_lines) if pdf_h_lines else 0.0
@@ -86,7 +98,9 @@ def build_grid(
 def _is_title_page(geom: PageGeometry, title: str) -> bool:
     """A title page has no lines and its only text matches the given title."""
     text = " ".join(w.text for w in geom.words).strip()
-    return len(geom.lines) == 0 and text == title
+    normalized = text.replace(" ", "").replace("\u3000", "")
+    title_norm = title.replace(" ", "").replace("\u3000", "")
+    return len(geom.lines) == 0 and normalized == title_norm
 
 
 def _find_title_page(geoms: Sequence[PageGeometry], title: str) -> int | None:
@@ -98,8 +112,25 @@ def _find_title_page(geoms: Sequence[PageGeometry], title: str) -> int | None:
 
 
 def is_expenditure_page(geom: PageGeometry) -> bool:
-    """Expenditure (歳出) data pages have vertical vector lines forming table columns."""
-    return any(l.is_vertical for l in geom.lines)
+    """Expenditure data page predicate with line-based and text-based fallback."""
+    has_vertical_lines = any(l.is_vertical for l in geom.lines)
+    normalized = "".join(w.text for w in geom.words).replace(" ", "").replace("\u3000", "")
+    has_left_header = (
+        "目" in normalized
+        and "本年度予算額" in normalized
+        and "前年度予算額" in normalized
+    )
+    has_right_header = (
+        "節" in normalized
+        and "説明" in normalized
+        and "区分" in normalized
+        and "金額" in normalized
+    )
+    has_header_pair = "款" in normalized and "項" in normalized and "千円" in normalized
+    return has_vertical_lines or (
+        len(geom.words) >= 20
+        and (has_left_header or has_right_header or has_header_pair)
+    )
 
 
 def extract_expenditure_pages(

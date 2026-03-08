@@ -77,6 +77,21 @@ class TestParsePageHeader:
         grid = build_grid(geom)
         assert parse_page_header(geom, grid) is None
 
+    def test_split_token_kan_kou(self) -> None:
+        geom = _make_geom((
+            Word(x0=50, y0=30, x1=70, y1=45, text="２"),
+            Word(x0=72, y0=30, x1=88, y1=45, text="款"),
+            Word(x0=90, y0=30, x1=140, y1=45, text="総務費"),
+            Word(x0=200, y0=30, x1=220, y1=45, text="１"),
+            Word(x0=222, y0=30, x1=236, y1=45, text="項"),
+            Word(x0=238, y0=30, x1=330, y1=45, text="総務管理費"),
+        ))
+        grid = build_grid(geom)
+        header = parse_page_header(geom, grid)
+        assert header is not None
+        assert header.kan_number == "２"
+        assert header.kou_number == "１"
+
 
 # ---------------------------------------------------------------------------
 # Integration: 106.pdf
