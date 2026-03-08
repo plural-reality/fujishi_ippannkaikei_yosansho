@@ -2,9 +2,11 @@
 CLI: Multi-page PDF → Excel.
 
 Pipeline:
-  extract → filter(歳出) → grid
-    → header(款/項) + cells → parse
-    → flatten → stamp → ffill(kan/kou) → sectioned_ffill(moku/setsu) → Excel
+  extract → filter(歳出) → grid → headers
+    → group by (款, 項) section
+    → per section: cells → merge → parse → flatten → ffill(moku/setsu)
+    → label(kan/kou)  — structural, every row
+    → concat → Excel
 
 Usage:
   python -m budget_cell.cli.to_excel <input.pdf> <output.xlsx>
@@ -13,17 +15,21 @@ Usage:
 from __future__ import annotations
 
 import sys
+from itertools import groupby
 
 from budget_cell.extract import extract_all_geometries
 from budget_cell.grid import build_grid, extract_expenditure_pages
 from budget_cell.header import parse_page_header
 from budget_cell.cells import assign_words_to_cells
+from budget_cell.merge import merge_rows
+from budget_cell.section import split_page_sections
 from budget_cell.parse import parse_page_budget
 from budget_cell.flatten import (
-    HEADERS, KAN_KOU_FIELDS, MOKU_FIELDS, SETSU_FIELDS,
-    flatten_page_budget, stamp_page, ffill, sectioned_ffill,
+    HEADERS, FFILL_FIELDS,
+    flatten_all_pages, label_section, ffill,
     row_to_tuple,
 )
+from budget_cell.types import Cell, Grid, PageGeometry, PageHeader
 
 
 def _write_excel(rows: tuple, dst_path: str) -> None:
@@ -51,6 +57,20 @@ def _write_excel(rows: tuple, dst_path: str) -> None:
     wb.save(dst_path)
 
 
+def _process_section(
+    header: PageHeader,
+    cell_groups: tuple[tuple[Cell, ...], ...],
+) -> tuple:
+    """Process one (款, 項) section: parse → flatten → ffill → label."""
+    budgets = tuple(
+        parse_page_budget(cells)
+        for cells in cell_groups
+    )
+    flat = flatten_all_pages(budgets)
+    filled = ffill(flat, FFILL_FIELDS)
+    return label_section(header, filled)
+
+
 def process_pdf_to_excel(src_path: str, dst_path: str) -> None:
     print(f"Extracting geometries from {src_path}...")
     all_geoms = extract_all_geometries(src_path)
@@ -59,44 +79,50 @@ def process_pdf_to_excel(src_path: str, dst_path: str) -> None:
     geoms = extract_expenditure_pages(all_geoms)
     print(f"  {len(geoms)} expenditure pages (after 歳出 title page)")
 
-    print("Building grids...")
+    print("Building grids + extracting headers...")
     grids = tuple(map(build_grid, geoms))
-
-    print("Extracting page headers (款/項)...")
     headers = tuple(parse_page_header(g, gr) for g, gr in zip(geoms, grids))
-    n_with_header = sum(1 for h in headers if h is not None)
-    print(f"  {n_with_header} pages with 款/項 headers")
 
-    print("Building cells + parsing budgets...")
-    # Process only pages with headers (= budget data pages)
-    pages = tuple(
+    # Filter to pages with valid headers (= budget data pages)
+    valid = tuple(
         (h, g, gr)
         for h, g, gr in zip(headers, geoms, grids)
         if h is not None
     )
+    print(f"  {len(valid)} pages with 款/項 headers")
 
-    per_page_rows = tuple(
-        stamp_page(h, flatten_page_budget(
-            parse_page_budget(assign_words_to_cells(g, gr))
-        ))
-        for h, g, gr in pages
+    # Build cells → merge → split mid-page transitions → collect (header, cells) segments
+    segments: tuple[tuple[PageHeader, tuple[Cell, ...]], ...] = tuple(
+        segment
+        for h, g, gr in valid
+        for segment in split_page_sections(h, merge_rows(assign_words_to_cells(g, gr)))
     )
+    print(f"  {len(segments)} segments (after mid-page splits)")
 
-    print("Forward-filling...")
-    # Step 1: ffill kan/kou across all rows (page header context)
-    all_rows = tuple(row for page in per_page_rows for row in page)
-    with_kan_kou = ffill(all_rows, KAN_KOU_FIELDS)
-
-    # Step 2: sectioned ffill for moku/setsu, scoped by (kan, kou)
-    filled = sectioned_ffill(
-        with_kan_kou,
-        (*MOKU_FIELDS, *SETSU_FIELDS),
-        section_key=KAN_KOU_FIELDS,
+    # Group consecutive segments by (款, 項)
+    sections = tuple(
+        (key_header, tuple(cells for _, cells in group_segs))
+        for key_header, group_segs in (
+            (key, tuple(grp))
+            for key, grp in groupby(
+                segments,
+                key=lambda t: (t[0].kan_number, t[0].kan_name, t[0].kou_number, t[0].kou_name),
+            )
+        )
+        for key_header in (PageHeader(*key_header),)
     )
-    print(f"  {len(filled)} rows")
+    print(f"  {len(sections)} sections (款/項)")
+
+    print("Processing sections...")
+    all_rows = tuple(
+        row
+        for header, cell_groups in sections
+        for row in _process_section(header, cell_groups)
+    )
+    print(f"  {len(all_rows)} rows")
 
     print(f"Writing Excel: {dst_path}")
-    _write_excel(filled, dst_path)
+    _write_excel(all_rows, dst_path)
     print("Done.")
 
 

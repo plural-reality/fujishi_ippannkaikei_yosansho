@@ -23,16 +23,14 @@ from budget_cell.cells import assign_words_to_cells
 from budget_cell.parse import parse_page_budget
 from budget_cell.flatten import (
     HEADERS,
-    KAN_KOU_FIELDS,
     MOKU_FIELDS,
     ffill,
     flatten_moku,
     flatten_orphans,
     flatten_page_budget,
     flatten_setsu,
+    label_section,
     row_to_tuple,
-    sectioned_ffill,
-    stamp_page,
     to_table,
 )
 
@@ -173,19 +171,24 @@ class TestFlattenPageBudget:
 
 
 # ---------------------------------------------------------------------------
-# stamp_page
+# label_section
 # ---------------------------------------------------------------------------
 
-class TestStampPage:
-    def test_stamps_first_row_only(self) -> None:
+class TestLabelSection:
+    def test_stamps_all_rows(self) -> None:
         rows = flatten_moku(SAMPLE_MOKU)
-        stamped = stamp_page(SAMPLE_HEADER, rows)
-        assert stamped[0].kan_name == "総務費"
-        assert stamped[0].kou_name == "総務管理費"
-        assert all(r.kan_name == "" for r in stamped[1:])
+        labeled = label_section(SAMPLE_HEADER, rows)
+        assert all(r.kan_name == "総務費" for r in labeled)
+        assert all(r.kou_name == "総務管理費" for r in labeled)
 
     def test_empty_rows(self) -> None:
-        assert stamp_page(SAMPLE_HEADER, ()) == ()
+        assert label_section(SAMPLE_HEADER, ()) == ()
+
+    def test_preserves_other_fields(self) -> None:
+        rows = flatten_moku(SAMPLE_MOKU)
+        labeled = label_section(SAMPLE_HEADER, rows)
+        assert labeled[0].moku_name == "11 会計管理費"
+        assert labeled[0].honendo == 85912
 
 
 # ---------------------------------------------------------------------------
@@ -217,32 +220,25 @@ class TestFfill:
 
 
 # ---------------------------------------------------------------------------
-# sectioned_ffill
+# Section isolation (no cross-section ffill needed — sections processed independently)
 # ---------------------------------------------------------------------------
 
-class TestSectionedFfill:
-    def test_does_not_leak_across_sections(self) -> None:
-        """moku from section A must not bleed into section B."""
-        sec_a_row = _empty_row(kan_name="A款", kou_name="A項", moku_name="目1", honendo=100)
-        sec_b_row = _empty_row(kan_name="B款", kou_name="B項", setsu_number=1, setsu_name="報酬")
-        filled = sectioned_ffill(
-            (sec_a_row, sec_b_row),
-            MOKU_FIELDS,
-            section_key=KAN_KOU_FIELDS,
-        )
-        assert filled[0].moku_name == "目1"
-        assert filled[1].moku_name == ""  # NOT "目1"
+class TestSectionIsolation:
+    def test_independent_sections_do_not_leak(self) -> None:
+        """Each section is processed independently, so ffill cannot leak across sections."""
+        header_a = PageHeader(kan_number="1", kan_name="A款", kou_number="1", kou_name="A項")
+        header_b = PageHeader(kan_number="2", kan_name="B款", kou_number="1", kou_name="B項")
 
-    def test_fills_within_section(self) -> None:
-        row1 = _empty_row(kan_name="A款", kou_name="A項", moku_name="目1", honendo=100)
-        row2 = _empty_row(kan_name="A款", kou_name="A項")
-        filled = sectioned_ffill(
-            (row1, row2),
-            MOKU_FIELDS,
-            section_key=KAN_KOU_FIELDS,
-        )
-        assert filled[1].moku_name == "目1"
-        assert filled[1].honendo == 100
+        rows_a = (_empty_row(moku_name="目1", honendo=100),)
+        rows_b = (_empty_row(setsu_number=1, setsu_name="報酬"),)
+
+        labeled_a = label_section(header_a, ffill(rows_a, MOKU_FIELDS))
+        labeled_b = label_section(header_b, ffill(rows_b, MOKU_FIELDS))
+
+        assert labeled_a[0].kan_name == "A款"
+        assert labeled_a[0].moku_name == "目1"
+        assert labeled_b[0].kan_name == "B款"
+        assert labeled_b[0].moku_name == ""  # no leak from section A
 
 
 # ---------------------------------------------------------------------------

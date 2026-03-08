@@ -12,7 +12,6 @@ Depends only on types. No IO, no PDF knowledge.
 from __future__ import annotations
 
 from dataclasses import replace
-from itertools import groupby
 from typing import Sequence
 
 from budget_cell.types import (
@@ -38,8 +37,6 @@ HEADERS: tuple[str, ...] = (
     "事業コード", "説明", "説明金額",
 )
 
-KAN_KOU_FIELDS: tuple[str, ...] = ("kan_name", "kou_name")
-
 MOKU_FIELDS: tuple[str, ...] = (
     "moku_name", "honendo", "zenendo", "hikaku",
     "kokuken", "chihousei", "sonota", "ippan",
@@ -49,7 +46,7 @@ SETSU_FIELDS: tuple[str, ...] = (
     "setsu_number", "setsu_name", "setsu_amount",
 )
 
-FFILL_FIELDS: tuple[str, ...] = (*KAN_KOU_FIELDS, *MOKU_FIELDS, *SETSU_FIELDS)
+FFILL_FIELDS: tuple[str, ...] = (*MOKU_FIELDS, *SETSU_FIELDS)
 
 
 # ---------------------------------------------------------------------------
@@ -191,19 +188,17 @@ def flatten_all_pages(budgets: Sequence[PageBudget]) -> tuple[FlatRow, ...]:
 
 
 # ---------------------------------------------------------------------------
-# 2. Per-page header stamping
+# 2. Section labeling (structural, not ffill)
 # ---------------------------------------------------------------------------
 
-def stamp_page(
+def label_section(
     header: PageHeader,
     rows: Sequence[FlatRow],
 ) -> tuple[FlatRow, ...]:
-    """Stamp kan/kou on the first row of a page. Rest left empty for ffill."""
-    return (
-        (replace(rows[0], kan_name=header.kan_name, kou_name=header.kou_name),
-         *rows[1:])
-        if rows
-        else ()
+    """Stamp kan/kou on ALL rows in a section. Structural, not forward-fill."""
+    return tuple(
+        replace(r, kan_name=header.kan_name, kou_name=header.kou_name)
+        for r in rows
     )
 
 
@@ -244,26 +239,6 @@ def ffill(
     for row in rows:
         result = step(result, row)
     return result[1]
-
-
-def sectioned_ffill(
-    rows: Sequence[FlatRow],
-    fields: tuple[str, ...],
-    section_key: tuple[str, ...],
-) -> tuple[FlatRow, ...]:
-    """Forward-fill scoped by section boundaries.
-
-    Groups rows by section_key fields, ffills within each group, concats.
-    Prevents context leakage across section boundaries.
-    """
-    return tuple(
-        filled_row
-        for _, group in groupby(
-            rows,
-            key=lambda r: tuple(getattr(r, f) for f in section_key),
-        )
-        for filled_row in ffill(tuple(group), fields)
-    )
 
 
 # ---------------------------------------------------------------------------
