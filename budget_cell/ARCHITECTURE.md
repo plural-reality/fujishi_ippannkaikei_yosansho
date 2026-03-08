@@ -1,226 +1,325 @@
-# budget_cell — Architecture
+# Architecture — budget_cell
 
-## Pipeline Overview (Type Signatures)
+富士市一般会計予算書 PDF → 構造化 Excel 変換パイプライン。
 
-```haskell
--- ============================================================
--- Layer 0: IO Boundary (extract.py)
--- ============================================================
+## 設計原則
 
-extract_page_geometry :: pdfplumber.Page -> PageGeometry
---   PageGeometry = { width, height, lines :: [Line], words :: [Word] }
---   Line = { x0, y0, x1, y1, linewidth }
---   Word = { x0, y0, x1, y1, text }        -- 絶対座標 (PDF座標系)
+- **不変データ**: 全ドメイン型は `frozen dataclass`。mutation なし。
+- **純粋関数パイプライン**: 各モジュールは `f(input) → output` の純粋変換。IO は境界のみ。
+- **疎結合**: 各変換ステップは独立。依存は `types.py` のみ共有。
+- **関心の分離**: PDF読取 / 幾何構造 / 表解析 / 正規化 / 出力 は完全に分離。
 
+---
 
--- ============================================================
--- Layer 1: Grid Construction (grid.py) — pure
--- ============================================================
-
-build_grid :: PageGeometry -> Grid
---   Grid = { col_boundaries :: [Float], row_boundaries :: [Float] }
---
---   col_boundaries: vertical PDF lines の X座標 (確定的, 100%正確)
---   row_boundaries: words の Y座標クラスタリング結果
---                   水平罫線 (table_top, table_bottom) の範囲内に限定
---
---   内部:
---     _vertical_line_xs   :: [Line] -> [Float]
---     _horizontal_line_ys :: [Line] -> [Float]
---     _word_row_ys        :: [Word] -> Float -> [Float]   -- threshold でクラスタリング
---     _cluster_values     :: [Float] -> Float -> [Float]  -- 近傍マージ
-
-
--- ============================================================
--- Layer 2: Cell Assignment (cells.py) — pure
--- ============================================================
-
-assign_words_to_cells :: PageGeometry -> Grid -> [Cell]
---   Cell = { row, col, x0, y0, x1, y1, text, words :: [Word] }
---
---   各 Word の X中点 → col, Y上端 → row にマッピング
---   同一 (row, col) の Word は x0 でソートして空白結合 → text
---   元の Word 列はそのまま保持 → words (絶対座標)
---   Grid 外の Word は捨てる
---
---   内部:
---     _find_column :: Float -> [Float] -> Int    -- X中点 → col (-1 if outside)
---     _find_row    :: Float -> [Float] -> Int    -- Y上端 → row (-1 if outside)
-
-
--- ============================================================
--- Layer 3: Budget Parsing (parse.py) — pure
--- ============================================================
-
--- 3a. Cell をインデックス化
-build_cell_index :: [Cell] -> CellIndex
---   CellIndex = Map (Int, Int) Cell          -- (row, col) -> Cell
---   text_at  :: CellIndex -> Int -> Int -> Maybe String
---   cell_at  :: CellIndex -> Int -> Int -> Maybe Cell
-
--- 3b. ヘッダー行検出
-detect_header_rows :: [Cell] -> FrozenSet Int
---   _HEADER_TOKENS = {"目", "千円", "節", "本年度予算額", ...}
---   行内のどれかのセルが _HEADER_TOKENS に含まれていれば header
-
--- 3c. 行分類
-classify_row :: CellIndex -> Int -> FrozenSet Int -> RowKind
---   RowKind = "header" | "moku" | "setsu" | "sub_item"
---           | "continuation" | "setsumei" | "empty"
---
---   判定ロジック (優先順):
---     header:       row ∈ header_rows
---     moku:         col[0] (目) にテキストあり
---     setsu:        col[9] (区分) が "N 名前" パターン AND col[10] (金額) あり
---     sub_item:     col[9] あり AND col[10] あり AND 節パターンでない
---     continuation: col[9] あり AND col[10] なし (節名の折り返し)
---     setsumei:     col[11] (説明) にテキストあり
---     empty:        上記いずれでもない
-
-classify_all_rows :: [Cell] -> [(Int, RowKind)]
-
--- 3d. 目ごとにグルーピング (reduce/scan)
-group_rows_by_moku :: [(Int, RowKind)] -> [(Maybe Int, [Int])]
---   header/empty を除外 → "moku" 行で区切り
---   最初の moku より前の行 → orphan (Nothing, rows)
---   moku 行 i 以降 → (Just i, child_rows)
-
--- 3e. 目の子行を節ごとにグルーピング
-group_rows_by_setsu :: CellIndex -> [Int] -> [(Maybe Int, [Int])]
---   _is_setsu で区切り (同じ reduce パターン)
-
--- 3f. レコード組み立て
-build_setsu_record :: CellIndex -> Maybe Int -> [Int] -> SetsuRecord
---   continuation 行をスキップして節名を結合
---   sub_item 行を小区分として収集
---   setsu行 + 子行から説明を座標ベースで収集
-
-build_moku_record :: CellIndex -> Int -> [Int] -> MokuRecord
---   目行から: name, honendo, zenendo, hikaku, zaigen を parse_amount
---   子行を group_rows_by_setsu → map build_setsu_record
-
--- 3f'. 説明列の座標ベースパース (regex を置き換え)
-parse_setsumei_cell :: Cell -> SetsumeiEntry
---   Cell.words の絶対座標を使い、セル境界との相対位置で分類:
---     code:   w.x0 - cell.x0 < 25pt AND 3桁数字 → コード
---     amount: cell.x1 - w.x1 < 50pt AND 数値パターン → 金額 (右寄せ)
---     name:   上記いずれでもない → 名前
-
--- 3g. トップレベル合成
-parse_page_budget :: [Cell] -> PageBudget
---   PageBudget = { moku_records :: [MokuRecord], orphan_setsu :: [SetsuRecord] }
---
---   = build_cell_index
---     >>> classify_all_rows
---     >>> group_rows_by_moku
---     >>> partition (isJust . fst)
---     >>> bimap (map build_moku_record) (flatMap (group_rows_by_setsu >>> map build_setsu_record))
-
-
--- ============================================================
--- Layer 4: Flatten (flatten.py) — pure
--- ============================================================
-
-flatten_page_budget :: PageBudget -> [FlatRow]
---   orphan_setsu.flatMap(flatten_setsu(Nothing))
---   ++ moku_records.flatMap(flatten_moku)
-
-flatten_moku :: MokuRecord -> [FlatRow]
---   setsu_list.flatMap(flatten_setsu(Just moku))
-
-flatten_setsu :: Maybe MokuRecord -> SetsuRecord -> [FlatRow]
---   sub_items.map(_sub_item_row) ++ setsumei.map(_setsumei_row)
---   空なら _setsu_only_row を1行
-
-row_to_tuple :: FlatRow -> (String, ...)    -- HEADERS 順, None → ""
-to_table     :: PageBudget -> [[String]]    -- [HEADERS] ++ map row_to_tuple (flatten_page_budget)
-```
-
-## Column Schema (ハードコード)
+## 依存グラフ
 
 ```
-Col  Name         Source         Content
-───  ───────────  ─────────     ────────────────────
- 0   COL_MOKU     左表           目名 ("11 会計管理費")
- 1   COL_HONENDO  左表           本年度予算額
- 2   COL_ZENENDO  左表           前年度予算額
- 3   COL_HIKAKU   左表           比較増減
- 4   COL_KOKUKEN  左表           国県支出金
- 5   COL_CHIHOUSEI 左表          地方債
- 6   COL_SONOTA   左表           その他
- 7   COL_IPPAN    左表           一般財源
- 8   (gap)        —              左右表の間の空白列
- 9   COL_KUBUN    右表           区分 (節番号+名前, 小区分名)
-10   COL_KINGAKU  右表           金額
-11   COL_SETSUMEI 右表           説明
+types.py ← SSOT（全ドメイン型、依存なし）
+  ↑
+  ├── extract.py    ← IO境界: pdfplumber
+  ├── grid.py       ← 純粋: 幾何構造 → Grid
+  ├── cells.py      ← 純粋: 幾何構造 × Grid → Cell[]
+  ├── header.py     ← 純粋: 幾何構造 × Grid → PageHeader
+  ├── merge.py      ← 純粋: Cell[] → Cell[]（複数行統合）
+  ├── section.py    ← 純粋: Cell[] → (Header, Cell[])[]（項境界分割）
+  ├── parse.py      ← 純粋: Cell[] → PageBudget
+  ├── flatten.py    ← 純粋: PageBudget → FlatRow[]
+  └── overlay.py    ← IO境界: fitz (pymupdf)
+
+cli/
+  ├── to_excel.py   ← パイプライン合成: PDF → Excel
+  └── overlay.py    ← パイプライン合成: PDF → overlay PDF
 ```
 
-## Coordinate System
+---
 
-全座標は**PDF絶対座標系** (pdfplumber 由来, 左上原点, pt単位)。
+## データ型（types.py — Single Source of Truth）
 
-- `Word.x0, .y0, .x1, .y1` — 絶対座標
-- `Cell.x0, .y0, .x1, .y1` — Grid の col/row boundary から算出 (絶対座標)
-- `Cell.words` — 元の Word 列をそのまま保持 (絶対座標)
+全型は `@dataclass(frozen=True)`。ロジックなし、IOなし、依存なし。
 
-セル内のインデントレベルは `w.x0 - cell.x0` で算出:
-```
-offset < 10pt  → level 0 (事業コード 002, 003)
-offset < 20pt  → level 1 (事業コード 001 + 名前)
-offset >= 20pt → level 2 (テキスト説明)
-```
-
-## 説明列の座標ベースパース
-
-`parse_setsumei_cell` は regex を使わず Word 座標で構造を判定:
+### PDF幾何層
 
 ```
-セル内レイアウト:
-  [code]  [name ...]              [amount]
-   左端     中央                    右寄せ
+Line(x0, y0, x1, y1, linewidth)
+  @property is_vertical: bool
+  @property is_horizontal: bool
 
-判定ルール:
-  code:   w.x0 - cell.x0 < 25pt AND /^\d{3}$/
-  amount: cell.x1 - w.x1 < 50pt AND /^[\d,△\-]+$/
-  name:   上記いずれでもない Word を空白結合
+Word(x0, y0, x1, y1, text)
+
+PageGeometry(width, height, lines: tuple[Line,...], words: tuple[Word,...])
+
+Grid(col_boundaries: tuple[float,...], row_boundaries: tuple[float,...])
 ```
 
-regex ベースの `parse_setsumei_line` を置き換え。座標分離により:
-- 「事務補助 1人」の「1人」を金額と誤認する問題が解消
-- コード / 名前 / 金額の境界が確定的
+### セル層
 
-## Header Detection
-
-ヘッダー行は `_HEADER_TOKENS` との集合積で判定:
 ```
-{"目", "千円", "節", "本年度予算額", "前年度予算額",
- "一般財源", "国県支出金", "地方債", "その他",
- "区分", "金額", "説明", "比較"}
-```
-行内のどれかのセルがこれらを含めば → header として除外。
-
-## Table Region Detection
-
-`build_grid` 内で水平罫線の min/max から表の上端・下端を推定:
-```
-table_top    = min(horizontal_line_ys)
-table_bottom = max(horizontal_line_ys)
-row_boundaries = filter (\y -> table_top - 5 <= y <= table_bottom + 5) (word_row_ys)
+Cell(row: int, col: int, x0, y0, x1, y1, text: str, words: tuple[Word,...])
 ```
 
-## 未解決: Cross-Page Context
+### ページヘッダ（表の上の款/項情報）
 
-現在、各ページは独立に処理される。
-orphan_setsu は `moku=Nothing` で flatten されるため、目名・予算額が空欄になる。
+```
+PageHeader(kan_number: str, kan_name: str, kou_number: str, kou_name: str)
+```
 
-解決案: `scan` パターン
-```haskell
-type CarryContext = { last_moku :: Maybe MokuRecord }
+### 予算構造層（表の中身）
 
-flatten_with_context :: CarryContext -> PageBudget -> ([FlatRow], CarryContext)
---   orphan_setsu → last_moku の情報で埋める
---   最後の moku_record を next context として持ち越す
+```
+SetsumeiEntry(kind: "coded"|"text", code: str|None, name: str, amount: int|None)
 
-flatten_all_pages :: [PageBudget] -> [FlatRow]
-flatten_all_pages = concat . snd . mapAccumL flatten_with_context emptyContext
+Zaigen(kokuken: int|None, chihousei: int|None, sonota: int|None, ippan: int|None)
+
+SetsuRecord(number: int|None, name: str, amount: int|None,
+            sub_items: tuple[(str, int|None),...],
+            setsumei: tuple[SetsumeiEntry,...])
+
+MokuRecord(name: str, honendo, zenendo, hikaku: int|None,
+           zaigen: Zaigen, setsu_list: tuple[SetsuRecord,...])
+
+PageBudget(moku_records: tuple[MokuRecord,...],
+           orphan_setsu: tuple[SetsuRecord,...])
+```
+
+### 正規化出力層
+
+```
+FlatRow(
+  kan_name, kou_name,                                    ← 款/項（label_section で付与）
+  moku_name, honendo, zenendo, hikaku,                   ← 目
+  kokuken, chihousei, sonota, ippan,                     ← 財源内訳
+  setsu_number, setsu_name, setsu_amount,                ← 節
+  sub_item_name, sub_item_amount,                        ← 小区分
+  setsumei_code, setsumei_name, setsumei_amount          ← 説明
+)
+```
+
+---
+
+## パイプライン詳細（to_excel.py）
+
+```
+PDF (bytes)
+ │
+ ▼ extract.py: extract_all_geometries
+tuple[PageGeometry, ...]                           全ページの幾何情報
+ │
+ ▼ grid.py: extract_expenditure_pages
+tuple[PageGeometry, ...]                           歳出セクションのみ（扉ページ以降の表ページ）
+ │
+ ▼ grid.py: build_grid  ×  header.py: parse_page_header
+tuple[(PageGeometry, Grid, PageHeader|None), ...]  Grid構築 + 表上ヘッダ抽出（並行）
+ │
+ ▼ filter: header is not None
+tuple[(PageHeader, PageGeometry, Grid), ...]       ヘッダのあるデータページのみ
+ │
+ ▼ cells.py: assign_words_to_cells → merge.py: merge_rows → section.py: split_page_sections
+tuple[(PageHeader, tuple[Cell,...]), ...]           セグメント（ページ内の項境界で分割済み）
+ │
+ ▼ itertools.groupby(key=(kan_number, kan_name, kou_number, kou_name))
+dict[(款,項) → tuple[tuple[Cell,...], ...]]         連続セグメントを(款,項)でグループ化
+ │
+ ▼ 各セクション独立処理: _process_section
+ │   ├─ parse.py: parse_page_budget     Cell[] → PageBudget（目/節/説明の構造化）
+ │   ├─ flatten.py: flatten_all_pages   PageBudget[] → FlatRow[]（木構造→フラット）
+ │   ├─ flatten.py: ffill               FlatRow[] → FlatRow[]（空欄を上から前方充填）
+ │   └─ flatten.py: label_section       FlatRow[] → FlatRow[]（款/項を全行に付与）
+ │
+ ▼ concat all sections
+tuple[FlatRow, ...]                                全行
+ │
+ ▼ _write_excel (openpyxl)
+Excel (.xlsx)
+```
+
+### 各ステップの変換
+
+| ステップ | 入力型 | 出力型 | モジュール | 性質 |
+|---|---|---|---|---|
+| PDF読取 | `str (path)` | `tuple[PageGeometry,...]` | extract | IO |
+| 歳出フィルタ | `tuple[PageGeometry,...]` | `tuple[PageGeometry,...]` | grid | 純粋 |
+| Grid構築 | `PageGeometry` | `Grid` | grid | 純粋 |
+| ヘッダ抽出 | `PageGeometry × Grid` | `PageHeader \| None` | header | 純粋 |
+| セル割当 | `PageGeometry × Grid` | `tuple[Cell,...]` | cells | 純粋 |
+| 行統合 | `tuple[Cell,...]` | `tuple[Cell,...]` | merge | 純粋 |
+| 項境界分割 | `PageHeader × tuple[Cell,...]` | `tuple[(PageHeader,tuple[Cell,...]),...]` | section | 純粋 |
+| 予算解析 | `tuple[Cell,...]` | `PageBudget` | parse | 純粋 |
+| フラット化 | `tuple[PageBudget,...]` | `tuple[FlatRow,...]` | flatten | 純粋 |
+| 前方充填 | `tuple[FlatRow,...] × fields` | `tuple[FlatRow,...]` | flatten | 純粋 |
+| 款項ラベル | `PageHeader × tuple[FlatRow,...]` | `tuple[FlatRow,...]` | flatten | 純粋 |
+| Excel出力 | `tuple[FlatRow,...]` | `.xlsx file` | cli/to_excel | IO |
+
+---
+
+## モジュール詳細
+
+### extract.py — IO境界（pdfplumber）
+
+パッケージ唯一の pdfplumber 依存。PDF バイト列をドメイン型に変換する境界。
+
+- `extract_page_geometry(page) → PageGeometry` — 1ページの幾何情報抽出
+- `extract_geometry_from_path(path, page_index=0) → PageGeometry` — 単一ページ
+- `extract_all_geometries(path) → tuple[PageGeometry,...]` — 全ページ map
+
+### grid.py — 幾何構造 → Grid
+
+縦罫線の X 座標 → 列境界、Word の Y 座標クラスタリング → 行境界。
+歳出セクション検出は「歳 出」扉ページ（テキスト一致 + 罫線なし）で判定。
+
+- `build_grid(geom) → Grid`
+- `is_expenditure_page(geom) → bool` — 縦罫線の有無
+- `extract_expenditure_pages(geoms) → tuple[PageGeometry,...]` — 扉ページ以降の表ページ
+
+### cells.py — Word → Cell 割当
+
+各 Word を Grid の (row, col) にマッピング。同一セルの Word は結合。
+
+- `assign_words_to_cells(geom, grid) → tuple[Cell,...]`
+
+### header.py — 表上ヘッダ抽出
+
+表の上方（Grid外）の Word 群から `N款 名前` `N項 名前` パターンを検出。
+非データページ（給与費明細書等）は `None` を返す。
+
+- `parse_page_header(geom, grid) → PageHeader | None`
+
+### merge.py — 複数行テキスト統合
+
+左表（col 0-7, アンカー=col 1 本年度予算額）と右表（col 9-11, アンカー=col 10 金額）を
+**独立して**統合。アンカー列に値がある行が論理行の開始、空行は前行への継続。
+
+これにより、目名が幅の都合で折り返される一方で節が新しいエントリを開始するケースを正しく処理。
+
+- `merge_rows(cells) → tuple[Cell,...]`
+
+### section.py — ページ内の項境界分割
+
+1ページ内に複数の(款,項)セクションが含まれるケースを検出・分割。
+小計行（`計 N款 ...`）+ 項遷移行（`N項`）のパターンで境界を判定。
+
+- `split_page_sections(header, cells) → tuple[(PageHeader, tuple[Cell,...]),...]`
+
+### parse.py — Cell[] → PageBudget
+
+セルの構造化パース。純粋関数の合成:
+
+```
+Cell[] → CellIndex → classify_all_rows → group_rows_by_moku
+  → group_rows_by_setsu → build_*_record → PageBudget
+```
+
+**行分類** (`classify_row`):
+- `header` — 表ヘッダ行（「目」「千円」「本年度予算額」等のキーワード）
+- `moku` — col 0 にテキストあり（目の開始）
+- `setsu` — col 9 に `数字 名前` パターン + col 10 に金額
+- `sub_item` — col 9 にテキスト + col 10 に金額（節パターンでない）
+- `continuation` — col 9 にテキスト、col 10 に金額なし（名前の継続行）
+- `setsumei` — col 11 にテキストのみ
+- `empty` — 上記いずれでもない
+
+**グルーピング**: `reduce` ベース（mutation なし）で目→節の階層構造を構築。
+
+**説明セル解析**: Word 座標ベースの 3 段パイプライン。
+1. `split_words_into_lines` — `Word.y` でセル内の論理行に分割
+2. `_parse_setsumei_line` — 各行を `code/name/amount` に分解
+3. `fold_setsumei_lines` — 右端金額あり行をアンカーとしてエントリ開始し、
+   金額なし行は直前エントリへ補足として連結
+
+これにより、`merge.py` で右表行が統合されても説明の論理行を復元できる。
+
+**列スキーマ**:
+| col | 内容 |
+|-----|------|
+| 0 | 目 |
+| 1 | 本年度予算額 |
+| 2 | 前年度予算額 |
+| 3 | 比較 |
+| 4 | 国県支出金 |
+| 5 | 地方債 |
+| 6 | その他 |
+| 7 | 一般財源 |
+| 8 | （空き） |
+| 9 | 節 区分 |
+| 10 | 節 金額 |
+| 11 | 説明 |
+
+### flatten.py — PageBudget → FlatRow[]
+
+三つの直交変換:
+
+1. **flatten** (concatMap) — `PageBudget` の木構造をフラットな行に展開
+   - `MokuRecord → SetsuRecord → (sub_items | setsumei | setsu_only)` の各リーフが1行
+   - orphan_setsu（目なし節）は moku フィールド空欄
+
+2. **ffill** (scanl) — 空欄セルを前行の値で前方充填
+   - `MOKU_FIELDS`: moku_name, honendo, zenendo, hikaku, kokuken, chihousei, sonota, ippan
+   - `SETSU_FIELDS`: setsu_number, setsu_name, setsu_amount
+   - `FFILL_FIELDS = MOKU_FIELDS + SETSU_FIELDS`
+   - 汎用的な scanl。ドメイン知識なし。
+
+3. **label_section** (map) — 款/項を全行に構造的に付与
+   - セクション単位で処理されるため ffill 不要。全行に同一の款/項をスタンプ。
+
+**出力ヘッダ** (18列):
+```
+款, 項, 目, 本年度予算額, 前年度予算額, 比較,
+国県支出金, 地方債, その他, 一般財源,
+節番号, 節名, 節金額, 小区分, 小区分金額,
+事業コード, 説明, 説明金額
+```
+
+### overlay.py — IO境界（fitz/pymupdf）
+
+デバッグ用。Grid の列/行境界を PDF 上に描画。
+
+---
+
+## セクションベース処理
+
+予算書の構造: **款 → 項 → 目 → 節 → 説明** の階層。
+表は (款, 項) 単位で分かれている。ページヘッダに `N款 名前 N項 名前` が記載。
+
+### なぜセクション単位か
+
+- 款/項はページヘッダに記載 → 表データ外
+- ffill で伝播すると項境界でリークする
+- セクション単位で独立処理 → label_section で構造的に付与 → リーク不可能
+
+### ページ内の項遷移
+
+1ページ内で項が切り替わるケースがある:
+```
+[row 21] 計 ２款 総務費     ← 小計行（前セクション終了）
+[row 23] ２項  徴税費        ← 項遷移行（新セクション開始）
+[row 24] 1 税務総務費 ...   ← 新セクションのデータ
+```
+
+`section.py: split_page_sections` がこの境界を検出し、
+1ページの Cell[] を複数の `(PageHeader, Cell[])` セグメントに分割。
+
+---
+
+## ファイル構成
+
+```
+budget_cell/
+├── __init__.py        エクスポート（全ドメイン型）
+├── types.py           ドメイン型定義（SSOT）
+├── extract.py         IO: pdfplumber → PageGeometry
+├── grid.py            PageGeometry → Grid, 歳出フィルタ
+├── cells.py           PageGeometry × Grid → Cell[]
+├── header.py          PageGeometry × Grid → PageHeader
+├── merge.py           Cell[] → Cell[]（行統合）
+├── section.py         (PageHeader, Cell[]) → (PageHeader, Cell[])[]（項分割）
+├── parse.py           Cell[] → PageBudget
+├── flatten.py         PageBudget → FlatRow[]
+├── overlay.py         IO: Grid → overlay PDF
+└── cli/
+    ├── to_excel.py    PDF → Excel パイプライン
+    └── overlay.py     PDF → overlay PDF パイプライン
+
+tests/
+├── test_types.py      型の不変性テスト
+├── test_flatten.py    flatten / ffill / label_section テスト
+└── test_header.py     ヘッダ抽出テスト
 ```

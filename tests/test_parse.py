@@ -24,10 +24,13 @@ from budget_cell.parse import (
     group_rows_by_moku,
     group_rows_by_setsu,
     is_header_row,
+    parse_setsumei_cell_lines,
+    parse_setsumei_cells,
     parse_amount,
     parse_page_budget,
     parse_setsumei_cell,
     parse_setsu_text,
+    split_words_into_lines,
     text_at,
 )
 
@@ -169,6 +172,74 @@ class TestParseSetsumeiCell:
                     text="", words=())
         result = parse_setsumei_cell(cell)
         assert result == SetsumeiEntry("text", None, "", None)
+
+
+class TestSetsumeiLineSplitAndFold:
+    def test_split_words_into_lines_by_y(self) -> None:
+        words = (
+            Word(x0=30, y0=10.0, x1=45, y1=12.0, text="A"),
+            Word(x0=50, y0=10.1, x1=60, y1=12.1, text="B"),
+            Word(x0=30, y0=18.0, x1=45, y1=20.0, text="C"),
+        )
+        lines = split_words_into_lines(words)
+        assert len(lines) == 2
+        assert tuple(w.text for w in lines[0]) == ("A", "B")
+        assert tuple(w.text for w in lines[1]) == ("C",)
+
+    def test_parse_setsumei_cell_lines_multiple_amount_lines(self) -> None:
+        cell = Cell(
+            row=0, col=11, x0=0, y0=0, x1=100, y1=20,
+            text="001 給与費 998 001 パートタイム会計年度任用職員 998",
+            words=(
+                Word(x0=5, y0=2, x1=20, y1=8, text="001"),
+                Word(x0=25, y0=2, x1=48, y1=8, text="給与費"),
+                Word(x0=80, y0=2, x1=95, y1=8, text="998"),
+                Word(x0=5, y0=12, x1=20, y1=18, text="001"),
+                Word(x0=25, y0=12, x1=70, y1=18, text="パートタイム会計年度任用職員"),
+                Word(x0=80, y0=12, x1=95, y1=18, text="998"),
+            ),
+        )
+        lines = parse_setsumei_cell_lines(cell)
+        assert len(lines) == 2
+        assert lines[0][1] is True
+        assert lines[0][0] == SetsumeiEntry("coded", "001", "給与費", 998)
+        assert lines[1][1] is True
+        assert lines[1][0] == SetsumeiEntry("coded", "001", "パートタイム会計年度任用職員", 998)
+
+    def test_parse_setsumei_cells_attach_non_amount_line_to_previous(self) -> None:
+        cells = (
+            Cell(
+                row=0, col=11, x0=0, y0=0, x1=100, y1=10,
+                text="001 給与費 998",
+                words=(
+                    Word(x0=5, y0=2, x1=20, y1=8, text="001"),
+                    Word(x0=25, y0=2, x1=48, y1=8, text="給与費"),
+                    Word(x0=80, y0=2, x1=95, y1=8, text="998"),
+                ),
+            ),
+            Cell(
+                row=1, col=11, x0=0, y0=10, x1=100, y1=20,
+                text="パートタイム会計年度任用職員",
+                words=(
+                    Word(x0=25, y0=12, x1=70, y1=18, text="パートタイム会計年度任用職員"),
+                ),
+            ),
+        )
+        entries = parse_setsumei_cells(cells)
+        assert entries == (
+            SetsumeiEntry("coded", "001", "給与費 パートタイム会計年度任用職員", 998),
+        )
+
+    def test_parse_setsumei_cells_no_base_keeps_text_row(self) -> None:
+        cells = (
+            Cell(
+                row=0, col=11, x0=0, y0=0, x1=100, y1=10,
+                text="（定数外）",
+                words=(Word(x0=30, y0=2, x1=48, y1=8, text="（定数外）"),),
+            ),
+        )
+        entries = parse_setsumei_cells(cells)
+        assert entries == (SetsumeiEntry("text", None, "（定数外）", None),)
 
 
 # ---------------------------------------------------------------------------
@@ -374,8 +445,8 @@ class TestBuildSetsuRecord:
         assert record.number == 4
         assert record.name == "共済費"
         assert record.amount == 127
-        assert len(record.setsumei) == 2
-        assert record.setsumei[0].name == "（定数外）"
+        assert len(record.setsumei) == 1
+        assert record.setsumei[0].name == "（定数外） 事務補助 1人"
 
     def test_setsu_with_continuation(self) -> None:
         idx = build_cell_index(CONTINUATION_CELLS)
@@ -484,10 +555,9 @@ class TestIntegration106:
         moku = self.budget.moku_records[0]
         houshuu = next(s for s in moku.setsu_list if s.name == "報酬")
         coded = [e for e in houshuu.setsumei if e.kind == "coded"]
-        assert len(coded) >= 1
-        assert coded[0].code == "001"
-        assert coded[0].name == "給与費"
-        assert coded[0].amount == 998
+        assert any(e.code == "001" and e.name == "給与費" and e.amount == 998 for e in coded)
+        assert any(e.code == "001" and "パートタイム会計年度任用職員" in e.name and e.amount == 998 for e in coded)
+        assert all(e.amount != 998998 for e in coded if e.amount is not None)
 
     def test_orphan_setsu_exist(self) -> None:
         assert len(self.budget.orphan_setsu) >= 1

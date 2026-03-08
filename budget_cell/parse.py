@@ -11,6 +11,7 @@ No IO. Depends only on types.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from functools import reduce
 from itertools import takewhile
 from types import MappingProxyType
@@ -72,6 +73,7 @@ def parse_setsu_text(text: str) -> tuple[int, str] | None:
 
 _AMOUNT_MARGIN = 50.0   # words within this distance of cell right edge → amount
 _CODE_MARGIN = 25.0     # words within this distance of cell left edge + 3-digit → code
+_LINE_Y_TOLERANCE = 1.2  # same logical line if y-center distance <= this value
 _CODE_RE = re.compile(r"^\d{3}$")
 _AMOUNT_RE = re.compile(r"^[\d,△\-]+$")
 
@@ -120,6 +122,127 @@ def _parse_setsumei_from_words(
         name=name,
         amount=amount,
     )
+
+
+def _word_mid_y(word: Word) -> float:
+    return (word.y0 + word.y1) / 2.0
+
+
+_LineClusterAcc = tuple[tuple[tuple[Word, ...], ...], tuple[Word, ...], float | None]
+
+
+def _line_cluster_step(acc: _LineClusterAcc, word: Word) -> _LineClusterAcc:
+    lines, cur_words, cur_y = acc
+    y = _word_mid_y(word)
+    return (
+        (lines, (word,), y)
+        if not cur_words
+        else (
+            (lines, (*cur_words, word), (((cur_y or y) * len(cur_words)) + y) / (len(cur_words) + 1))
+            if cur_y is not None and abs(y - cur_y) <= _LINE_Y_TOLERANCE
+            else ((*lines, tuple(sorted(cur_words, key=lambda w: w.x0))), (word,), y)
+        )
+    )
+
+
+def _finalize_line_clusters(acc: _LineClusterAcc) -> tuple[tuple[Word, ...], ...]:
+    lines, cur_words, _ = acc
+    return (
+        (*lines, tuple(sorted(cur_words, key=lambda w: w.x0)))
+        if cur_words
+        else lines
+    )
+
+
+def split_words_into_lines(words: Sequence[Word]) -> tuple[tuple[Word, ...], ...]:
+    """Cluster words into logical lines by y-position, then sort each line by x."""
+    sorted_words = tuple(sorted(words, key=lambda w: (_word_mid_y(w), w.x0)))
+    return _finalize_line_clusters(
+        reduce(_line_cluster_step, sorted_words, ((), (), None))
+    )
+
+
+def _parse_setsumei_line(
+    words: tuple[Word, ...], cell_x0: float, cell_x1: float,
+) -> tuple[SetsumeiEntry, bool]:
+    """Parse one logical line. bool indicates whether the line has right-edge amount."""
+    amount_ws = tuple(w for w in words if _is_amount_word(w, cell_x1))
+    code_ws = tuple(w for w in words if _is_code_word(w, cell_x0))
+    name_ws = tuple(w for w in words if w not in amount_ws and w not in code_ws)
+
+    code = code_ws[0].text if code_ws else None
+    amount = parse_amount(" ".join(w.text for w in amount_ws)) if amount_ws else None
+    entry = SetsumeiEntry(
+        kind="coded" if code else "text",
+        code=code,
+        name=" ".join(w.text for w in name_ws),
+        amount=amount,
+    )
+    return (entry, bool(amount_ws))
+
+
+def parse_setsumei_cell_lines(cell: Cell) -> tuple[tuple[SetsumeiEntry, bool], ...]:
+    """Parse one setsumei cell into logical line entries with amount-anchor flag."""
+    return tuple(
+        _parse_setsumei_line(line_words, cell.x0, cell.x1)
+        for line_words in split_words_into_lines(cell.words)
+    )
+
+
+def _join_text(base: str, extra: str) -> str:
+    return (
+        extra
+        if not base
+        else base
+        if not extra
+        else f"{base} {extra}"
+    )
+
+
+def _merge_supplement_line(base: SetsumeiEntry, supplement: SetsumeiEntry) -> SetsumeiEntry:
+    """Attach a non-amount supplement line to a base entry."""
+    merged_code = base.code or supplement.code
+    return replace(
+        base,
+        kind="coded" if merged_code else "text",
+        code=merged_code,
+        name=_join_text(base.name, supplement.name),
+        amount=base.amount if base.amount is not None else supplement.amount,
+    )
+
+
+def fold_setsumei_lines(
+    line_entries: Sequence[tuple[SetsumeiEntry, bool]],
+) -> tuple[SetsumeiEntry, ...]:
+    """Fold line-level entries into logical setsumei entries.
+
+    Rule:
+      - amount line: starts a new entry
+      - non-amount line: attaches to the previous entry as supplement
+      - if there is no previous entry, keep it as a standalone entry
+    """
+    def step(
+        acc: tuple[SetsumeiEntry, ...],
+        item: tuple[SetsumeiEntry, bool],
+    ) -> tuple[SetsumeiEntry, ...]:
+        entry, has_amount = item
+        return (
+            (*acc, entry)
+            if has_amount or not acc
+            else (*acc[:-1], _merge_supplement_line(acc[-1], entry))
+        )
+
+    return reduce(step, line_entries, ())
+
+
+def parse_setsumei_cells(cells: Sequence[Cell]) -> tuple[SetsumeiEntry, ...]:
+    """Parse and fold all setsumei cells of one setsu in row order."""
+    lines = tuple(
+        line
+        for cell in cells
+        for line in parse_setsumei_cell_lines(cell)
+    )
+    return fold_setsumei_lines(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -370,11 +493,12 @@ def build_setsu_record(
         ((setsu_row,) if setsu_row is not None else ())
         + tuple(effective)
     )
-    setsumei = tuple(
-        parse_setsumei_cell(cell)
+    setsumei_cells = tuple(
+        cell
         for r in setsumei_rows
         if (cell := cell_at(idx, r, COL_SETSUMEI)) is not None and cell.text.strip()
     )
+    setsumei = parse_setsumei_cells(setsumei_cells)
 
     return SetsuRecord(
         number=number, name=name, amount=amount,
