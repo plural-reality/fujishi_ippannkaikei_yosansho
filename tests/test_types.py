@@ -57,6 +57,7 @@ class TestImmutability:
 
     def test_flat_row_frozen(self) -> None:
         r = FlatRow(
+            kan_name="", kou_name="",
             moku_name="", honendo=None, zenendo=None, hikaku=None,
             kokuken=None, chihousei=None, sonota=None, ippan=None,
             setsu_number=None, setsu_name="", setsu_amount=None,

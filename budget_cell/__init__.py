@@ -19,6 +19,7 @@ from budget_cell.types import (
     MokuRecord,
     PageBudget,
     PageGeometry,
+    PageHeader,
     SetsuRecord,
     SetsumeiEntry,
     Word,
@@ -27,6 +28,6 @@ from budget_cell.types import (
 
 __all__ = [
     "Cell", "FlatRow", "Grid", "Line",
-    "MokuRecord", "PageBudget", "PageGeometry",
+    "MokuRecord", "PageBudget", "PageGeometry", "PageHeader",
     "SetsuRecord", "SetsumeiEntry", "Word", "Zaigen",
 ]

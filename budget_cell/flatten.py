@@ -1,9 +1,10 @@
 """
 Pure flatten: PageBudget → FlatRow[].
 
-Two orthogonal transforms:
-  1. flatten  — structural: PageBudget tree → flat rows (concatMap)
-  2. ffill    — tabular:    forward-fill empty cells from row above (scanl)
+Three orthogonal transforms:
+  1. flatten     — structural: PageBudget tree → flat rows (concatMap)
+  2. stamp_page  — per-page: attach PageHeader (kan/kou) to first row
+  3. ffill / sectioned_ffill — tabular: forward-fill empty cells (scanl)
 
 Depends only on types. No IO, no PDF knowledge.
 """
@@ -11,12 +12,14 @@ Depends only on types. No IO, no PDF knowledge.
 from __future__ import annotations
 
 from dataclasses import replace
+from itertools import groupby
 from typing import Sequence
 
 from budget_cell.types import (
     FlatRow,
     MokuRecord,
     PageBudget,
+    PageHeader,
     SetsuRecord,
     SetsumeiEntry,
 )
@@ -27,12 +30,15 @@ from budget_cell.types import (
 # ---------------------------------------------------------------------------
 
 HEADERS: tuple[str, ...] = (
+    "款", "項",
     "目", "本年度予算額", "前年度予算額", "比較",
     "国県支出金", "地方債", "その他", "一般財源",
     "節番号", "節名", "節金額",
     "小区分", "小区分金額",
     "事業コード", "説明", "説明金額",
 )
+
+KAN_KOU_FIELDS: tuple[str, ...] = ("kan_name", "kou_name")
 
 MOKU_FIELDS: tuple[str, ...] = (
     "moku_name", "honendo", "zenendo", "hikaku",
@@ -43,7 +49,7 @@ SETSU_FIELDS: tuple[str, ...] = (
     "setsu_number", "setsu_name", "setsu_amount",
 )
 
-FFILL_FIELDS: tuple[str, ...] = (*MOKU_FIELDS, *SETSU_FIELDS)
+FFILL_FIELDS: tuple[str, ...] = (*KAN_KOU_FIELDS, *MOKU_FIELDS, *SETSU_FIELDS)
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +62,8 @@ def _setsumei_row(
     entry: SetsumeiEntry,
 ) -> FlatRow:
     return FlatRow(
+        kan_name="",
+        kou_name="",
         moku_name=moku.name if moku else "",
         honendo=moku.honendo if moku else None,
         zenendo=moku.zenendo if moku else None,
@@ -82,6 +90,8 @@ def _sub_item_row(
     amount: int | None,
 ) -> FlatRow:
     return FlatRow(
+        kan_name="",
+        kou_name="",
         moku_name=moku.name if moku else "",
         honendo=moku.honendo if moku else None,
         zenendo=moku.zenendo if moku else None,
@@ -106,6 +116,8 @@ def _setsu_only_row(
     setsu: SetsuRecord,
 ) -> FlatRow:
     return FlatRow(
+        kan_name="",
+        kou_name="",
         moku_name=moku.name if moku else "",
         honendo=moku.honendo if moku else None,
         zenendo=moku.zenendo if moku else None,
@@ -179,7 +191,24 @@ def flatten_all_pages(budgets: Sequence[PageBudget]) -> tuple[FlatRow, ...]:
 
 
 # ---------------------------------------------------------------------------
-# 2. Generic forward-fill (scanl)
+# 2. Per-page header stamping
+# ---------------------------------------------------------------------------
+
+def stamp_page(
+    header: PageHeader,
+    rows: Sequence[FlatRow],
+) -> tuple[FlatRow, ...]:
+    """Stamp kan/kou on the first row of a page. Rest left empty for ffill."""
+    return (
+        (replace(rows[0], kan_name=header.kan_name, kou_name=header.kou_name),
+         *rows[1:])
+        if rows
+        else ()
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. Generic forward-fill (scanl)
 # ---------------------------------------------------------------------------
 
 def _is_empty(val: object) -> bool:
@@ -217,12 +246,34 @@ def ffill(
     return result[1]
 
 
+def sectioned_ffill(
+    rows: Sequence[FlatRow],
+    fields: tuple[str, ...],
+    section_key: tuple[str, ...],
+) -> tuple[FlatRow, ...]:
+    """Forward-fill scoped by section boundaries.
+
+    Groups rows by section_key fields, ffills within each group, concats.
+    Prevents context leakage across section boundaries.
+    """
+    return tuple(
+        filled_row
+        for _, group in groupby(
+            rows,
+            key=lambda r: tuple(getattr(r, f) for f in section_key),
+        )
+        for filled_row in ffill(tuple(group), fields)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Row → tuple (for CSV/tabular output)
 # ---------------------------------------------------------------------------
 
 def row_to_tuple(row: FlatRow) -> tuple:
     return (
+        row.kan_name,
+        row.kou_name,
         row.moku_name,
         row.honendo or "",
         row.zenendo or "",

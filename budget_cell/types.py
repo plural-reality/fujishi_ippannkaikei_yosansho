@@ -67,6 +67,19 @@ class Cell:
 
 
 # ---------------------------------------------------------------------------
+# Page header types (above-table metadata)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class PageHeader:
+    """款/項 metadata extracted from above-table words."""
+    kan_number: str    # Full-width numeral ("１", "２", ...)
+    kan_name: str      # "議会費", "総務費", ...
+    kou_number: str
+    kou_name: str
+
+
+# ---------------------------------------------------------------------------
 # Budget domain types
 # ---------------------------------------------------------------------------
 
@@ -122,7 +135,9 @@ class PageBudget:
 
 @dataclass(frozen=True)
 class FlatRow:
-    """Non-normalized single row — carries full context from 目 to 説明."""
+    """Non-normalized single row — carries full context from 款 to 説明."""
+    kan_name: str
+    kou_name: str
     moku_name: str
     honendo: int | None
     zenendo: int | None

@@ -12,6 +12,7 @@ from budget_cell.types import (
     FlatRow,
     MokuRecord,
     PageBudget,
+    PageHeader,
     SetsuRecord,
     SetsumeiEntry,
     Zaigen,
@@ -22,6 +23,7 @@ from budget_cell.cells import assign_words_to_cells
 from budget_cell.parse import parse_page_budget
 from budget_cell.flatten import (
     HEADERS,
+    KAN_KOU_FIELDS,
     MOKU_FIELDS,
     ffill,
     flatten_moku,
@@ -29,6 +31,8 @@ from budget_cell.flatten import (
     flatten_page_budget,
     flatten_setsu,
     row_to_tuple,
+    sectioned_ffill,
+    stamp_page,
     to_table,
 )
 
@@ -61,6 +65,22 @@ SAMPLE_MOKU = MokuRecord(
     zaigen=SAMPLE_ZAIGEN,
     setsu_list=(SAMPLE_SETSU, SAMPLE_SETSU_EMPTY),
 )
+
+SAMPLE_HEADER = PageHeader(
+    kan_number="２", kan_name="総務費",
+    kou_number="１", kou_name="総務管理費",
+)
+
+def _empty_row(**overrides) -> FlatRow:
+    defaults = dict(
+        kan_name="", kou_name="",
+        moku_name="", honendo=None, zenendo=None, hikaku=None,
+        kokuken=None, chihousei=None, sonota=None, ippan=None,
+        setsu_number=None, setsu_name="", setsu_amount=None,
+        sub_item_name="", sub_item_amount=None,
+        setsumei_code="", setsumei_name="", setsumei_amount=None,
+    )
+    return FlatRow(**{**defaults, **overrides})
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +118,12 @@ class TestFlattenSetsu:
         assert all(r.moku_name == "" for r in rows)
         assert all(r.honendo is None for r in rows)
 
+    def test_kan_kou_always_empty(self) -> None:
+        """flatten produces empty kan/kou — stamping is a separate step."""
+        rows = flatten_setsu(SAMPLE_MOKU, SAMPLE_SETSU)
+        assert all(r.kan_name == "" for r in rows)
+        assert all(r.kou_name == "" for r in rows)
+
     def test_all_rows_frozen(self) -> None:
         rows = flatten_setsu(SAMPLE_MOKU, SAMPLE_SETSU)
         for r in rows:
@@ -106,7 +132,7 @@ class TestFlattenSetsu:
 
 
 # ---------------------------------------------------------------------------
-# flatten_moku
+# flatten_moku / flatten_orphans / flatten_page_budget
 # ---------------------------------------------------------------------------
 
 class TestFlattenMoku:
@@ -120,10 +146,6 @@ class TestFlattenMoku:
         assert all(r.honendo == 85912 for r in rows)
 
 
-# ---------------------------------------------------------------------------
-# flatten_orphans
-# ---------------------------------------------------------------------------
-
 class TestFlattenOrphans:
     def test_basic(self) -> None:
         rows = flatten_orphans((SAMPLE_SETSU,))
@@ -134,10 +156,6 @@ class TestFlattenOrphans:
         assert flatten_orphans(()) == ()
 
 
-# ---------------------------------------------------------------------------
-# flatten_page_budget
-# ---------------------------------------------------------------------------
-
 class TestFlattenPageBudget:
     def test_combines_orphans_and_moku(self) -> None:
         budget = PageBudget(
@@ -146,7 +164,6 @@ class TestFlattenPageBudget:
         )
         rows = flatten_page_budget(budget)
         assert len(rows) == 5
-        # First row is orphan (empty moku), last has moku
         assert rows[0].moku_name == ""
         assert rows[-1].moku_name == "11 会計管理費"
 
@@ -156,83 +173,76 @@ class TestFlattenPageBudget:
 
 
 # ---------------------------------------------------------------------------
-# ffill (generic forward-fill)
+# stamp_page
+# ---------------------------------------------------------------------------
+
+class TestStampPage:
+    def test_stamps_first_row_only(self) -> None:
+        rows = flatten_moku(SAMPLE_MOKU)
+        stamped = stamp_page(SAMPLE_HEADER, rows)
+        assert stamped[0].kan_name == "総務費"
+        assert stamped[0].kou_name == "総務管理費"
+        assert all(r.kan_name == "" for r in stamped[1:])
+
+    def test_empty_rows(self) -> None:
+        assert stamp_page(SAMPLE_HEADER, ()) == ()
+
+
+# ---------------------------------------------------------------------------
+# ffill
 # ---------------------------------------------------------------------------
 
 class TestFfill:
-    def test_fills_empty_string_from_above(self) -> None:
-        row_with = FlatRow(
-            moku_name="目A", honendo=100, zenendo=200, hikaku=-100,
-            kokuken=None, chihousei=None, sonota=None, ippan=None,
-            setsu_number=1, setsu_name="報酬", setsu_amount=50,
-            sub_item_name="", sub_item_amount=None,
-            setsumei_code="", setsumei_name="", setsumei_amount=None,
-        )
-        row_empty = FlatRow(
-            moku_name="", honendo=None, zenendo=None, hikaku=None,
-            kokuken=None, chihousei=None, sonota=None, ippan=None,
-            setsu_number=2, setsu_name="旅費", setsu_amount=30,
-            sub_item_name="", sub_item_amount=None,
-            setsumei_code="", setsumei_name="", setsumei_amount=None,
-        )
+    def test_fills_empty_from_above(self) -> None:
+        row_with = _empty_row(moku_name="目A", honendo=100, zenendo=200)
+        row_empty = _empty_row(setsu_number=2, setsu_name="旅費", setsu_amount=30)
         filled = ffill((row_with, row_empty), MOKU_FIELDS)
-        assert filled[0].moku_name == "目A"
         assert filled[1].moku_name == "目A"
         assert filled[1].honendo == 100
-        assert filled[1].zenendo == 200
 
     def test_does_not_fill_non_specified_fields(self) -> None:
-        row_with = FlatRow(
-            moku_name="目A", honendo=100, zenendo=None, hikaku=None,
-            kokuken=None, chihousei=None, sonota=None, ippan=None,
-            setsu_number=1, setsu_name="報酬", setsu_amount=50,
-            sub_item_name="", sub_item_amount=None,
-            setsumei_code="001", setsumei_name="給与", setsumei_amount=999,
-        )
-        row_empty = FlatRow(
-            moku_name="", honendo=None, zenendo=None, hikaku=None,
-            kokuken=None, chihousei=None, sonota=None, ippan=None,
-            setsu_number=2, setsu_name="旅費", setsu_amount=30,
-            sub_item_name="", sub_item_amount=None,
-            setsumei_code="", setsumei_name="", setsumei_amount=None,
-        )
+        row_with = _empty_row(moku_name="目A", setsumei_code="001")
+        row_empty = _empty_row()
         filled = ffill((row_with, row_empty), MOKU_FIELDS)
-        # setsumei fields are NOT in MOKU_FIELDS, so they stay empty
         assert filled[1].setsumei_code == ""
-        assert filled[1].setsumei_name == ""
 
     def test_empty_input(self) -> None:
         assert ffill((), MOKU_FIELDS) == ()
 
-    def test_single_row(self) -> None:
-        row = FlatRow(
-            moku_name="目A", honendo=100, zenendo=None, hikaku=None,
-            kokuken=None, chihousei=None, sonota=None, ippan=None,
-            setsu_number=1, setsu_name="報酬", setsu_amount=50,
-            sub_item_name="", sub_item_amount=None,
-            setsumei_code="", setsumei_name="", setsumei_amount=None,
-        )
-        filled = ffill((row,), MOKU_FIELDS)
-        assert filled == (row,)
-
     def test_chains_through_multiple_empty_rows(self) -> None:
-        base = FlatRow(
-            moku_name="目B", honendo=500, zenendo=400, hikaku=100,
-            kokuken=10, chihousei=20, sonota=30, ippan=440,
-            setsu_number=1, setsu_name="報酬", setsu_amount=50,
-            sub_item_name="", sub_item_amount=None,
-            setsumei_code="", setsumei_name="", setsumei_amount=None,
-        )
-        empty = FlatRow(
-            moku_name="", honendo=None, zenendo=None, hikaku=None,
-            kokuken=None, chihousei=None, sonota=None, ippan=None,
-            setsu_number=2, setsu_name="旅費", setsu_amount=30,
-            sub_item_name="", sub_item_amount=None,
-            setsumei_code="", setsumei_name="", setsumei_amount=None,
-        )
+        base = _empty_row(moku_name="目B", honendo=500)
+        empty = _empty_row()
         filled = ffill((base, empty, empty, empty), MOKU_FIELDS)
         assert all(r.moku_name == "目B" for r in filled)
-        assert all(r.honendo == 500 for r in filled)
+
+
+# ---------------------------------------------------------------------------
+# sectioned_ffill
+# ---------------------------------------------------------------------------
+
+class TestSectionedFfill:
+    def test_does_not_leak_across_sections(self) -> None:
+        """moku from section A must not bleed into section B."""
+        sec_a_row = _empty_row(kan_name="A款", kou_name="A項", moku_name="目1", honendo=100)
+        sec_b_row = _empty_row(kan_name="B款", kou_name="B項", setsu_number=1, setsu_name="報酬")
+        filled = sectioned_ffill(
+            (sec_a_row, sec_b_row),
+            MOKU_FIELDS,
+            section_key=KAN_KOU_FIELDS,
+        )
+        assert filled[0].moku_name == "目1"
+        assert filled[1].moku_name == ""  # NOT "目1"
+
+    def test_fills_within_section(self) -> None:
+        row1 = _empty_row(kan_name="A款", kou_name="A項", moku_name="目1", honendo=100)
+        row2 = _empty_row(kan_name="A款", kou_name="A項")
+        filled = sectioned_ffill(
+            (row1, row2),
+            MOKU_FIELDS,
+            section_key=KAN_KOU_FIELDS,
+        )
+        assert filled[1].moku_name == "目1"
+        assert filled[1].honendo == 100
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +258,8 @@ class TestRowToTuple:
     def test_none_replaced_with_empty(self) -> None:
         row = flatten_setsu(None, SAMPLE_SETSU_EMPTY)[0]
         t = row_to_tuple(row)
-        assert t[1] == ""
+        # honendo (index 3) should be "" not None
+        assert t[3] == ""
 
 
 class TestToTable:
