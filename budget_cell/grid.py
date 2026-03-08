@@ -3,6 +3,8 @@ Pure grid construction: PageGeometry → Grid.
 
 Column boundaries from vertical PDF lines, row boundaries from text Y-clustering.
 No IO, no external dependencies beyond types.
+
+Also provides expenditure section detection via 扉ページ (title page).
 """
 
 from __future__ import annotations
@@ -75,3 +77,35 @@ def build_grid(
     )
 
     return Grid(col_boundaries=col_boundaries, row_boundaries=row_boundaries)
+
+
+# ---------------------------------------------------------------------------
+# Section detection: 扉ページ (title page) based
+# ---------------------------------------------------------------------------
+
+def _is_title_page(geom: PageGeometry, title: str) -> bool:
+    """A title page has no lines and its only text matches the given title."""
+    text = " ".join(w.text for w in geom.words).strip()
+    return len(geom.lines) == 0 and text == title
+
+
+def _find_title_page(geoms: Sequence[PageGeometry], title: str) -> int | None:
+    """Return the index of the first page whose text is exactly `title`, or None."""
+    return next(
+        (i for i, g in enumerate(geoms) if _is_title_page(g, title)),
+        None,
+    )
+
+
+def is_expenditure_page(geom: PageGeometry) -> bool:
+    """Expenditure (歳出) data pages have vertical vector lines forming table columns."""
+    return any(l.is_vertical for l in geom.lines)
+
+
+def extract_expenditure_pages(
+    geoms: Sequence[PageGeometry],
+) -> tuple[PageGeometry, ...]:
+    """Slice geometries to expenditure section: from 「歳 出」title page onward, table pages only."""
+    start = _find_title_page(geoms, "歳 出")
+    section = geoms[start:] if start is not None else geoms
+    return tuple(g for g in section if is_expenditure_page(g))

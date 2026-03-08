@@ -1,11 +1,16 @@
 """
 Pure flatten: PageBudget → FlatRow[].
 
+Two orthogonal transforms:
+  1. flatten  — structural: PageBudget tree → flat rows (concatMap)
+  2. ffill    — tabular:    forward-fill empty cells from row above (scanl)
+
 Depends only on types. No IO, no PDF knowledge.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Sequence
 
 from budget_cell.types import (
@@ -27,19 +32,28 @@ HEADERS: tuple[str, ...] = (
     "節番号", "節名", "節金額",
     "小区分", "小区分金額",
     "事業コード", "説明", "説明金額",
-    "orphan",
 )
+
+MOKU_FIELDS: tuple[str, ...] = (
+    "moku_name", "honendo", "zenendo", "hikaku",
+    "kokuken", "chihousei", "sonota", "ippan",
+)
+
+SETSU_FIELDS: tuple[str, ...] = (
+    "setsu_number", "setsu_name", "setsu_amount",
+)
+
+FFILL_FIELDS: tuple[str, ...] = (*MOKU_FIELDS, *SETSU_FIELDS)
 
 
 # ---------------------------------------------------------------------------
-# Pure flatten transforms
+# 1. Structural flatten (concatMap)
 # ---------------------------------------------------------------------------
 
 def _setsumei_row(
     moku: MokuRecord | None,
     setsu: SetsuRecord,
     entry: SetsumeiEntry,
-    is_orphan: bool,
 ) -> FlatRow:
     return FlatRow(
         moku_name=moku.name if moku else "",
@@ -58,7 +72,6 @@ def _setsumei_row(
         setsumei_code=entry.code or "",
         setsumei_name=entry.name,
         setsumei_amount=entry.amount,
-        is_orphan=is_orphan,
     )
 
 
@@ -67,7 +80,6 @@ def _sub_item_row(
     setsu: SetsuRecord,
     name: str,
     amount: int | None,
-    is_orphan: bool,
 ) -> FlatRow:
     return FlatRow(
         moku_name=moku.name if moku else "",
@@ -86,14 +98,12 @@ def _sub_item_row(
         setsumei_code="",
         setsumei_name="",
         setsumei_amount=None,
-        is_orphan=is_orphan,
     )
 
 
 def _setsu_only_row(
     moku: MokuRecord | None,
     setsu: SetsuRecord,
-    is_orphan: bool,
 ) -> FlatRow:
     return FlatRow(
         moku_name=moku.name if moku else "",
@@ -112,28 +122,26 @@ def _setsu_only_row(
         setsumei_code="",
         setsumei_name="",
         setsumei_amount=None,
-        is_orphan=is_orphan,
     )
 
 
 def flatten_setsu(
     moku: MokuRecord | None,
     setsu: SetsuRecord,
-    is_orphan: bool = False,
 ) -> tuple[FlatRow, ...]:
     """Flatten one SetsuRecord into FlatRows (sub-items + setsumei entries)."""
     sub_rows = tuple(
-        _sub_item_row(moku, setsu, name, amount, is_orphan)
+        _sub_item_row(moku, setsu, name, amount)
         for name, amount in setsu.sub_items
     )
     setsumei_rows = tuple(
-        _setsumei_row(moku, setsu, entry, is_orphan)
+        _setsumei_row(moku, setsu, entry)
         for entry in setsu.setsumei
     )
     return (
         (*sub_rows, *setsumei_rows)
         if sub_rows or setsumei_rows
-        else (_setsu_only_row(moku, setsu, is_orphan),)
+        else (_setsu_only_row(moku, setsu),)
     )
 
 
@@ -146,10 +154,11 @@ def flatten_moku(moku: MokuRecord) -> tuple[FlatRow, ...]:
 
 
 def flatten_orphans(orphan_setsu: Sequence[SetsuRecord]) -> tuple[FlatRow, ...]:
+    """Orphans have no moku on this page — fields left empty for ffill."""
     return tuple(
         row
         for setsu in orphan_setsu
-        for row in flatten_setsu(None, setsu, is_orphan=True)
+        for row in flatten_setsu(None, setsu)
     )
 
 
@@ -158,6 +167,54 @@ def flatten_page_budget(budget: PageBudget) -> tuple[FlatRow, ...]:
         *flatten_orphans(budget.orphan_setsu),
         *(row for moku in budget.moku_records for row in flatten_moku(moku)),
     )
+
+
+def flatten_all_pages(budgets: Sequence[PageBudget]) -> tuple[FlatRow, ...]:
+    """Pure concatMap over pages. No cross-page logic."""
+    return tuple(
+        row
+        for budget in budgets
+        for row in flatten_page_budget(budget)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 2. Generic forward-fill (scanl)
+# ---------------------------------------------------------------------------
+
+def _is_empty(val: object) -> bool:
+    return val is None or val == ""
+
+
+def ffill(
+    rows: Sequence[FlatRow],
+    fields: tuple[str, ...],
+) -> tuple[FlatRow, ...]:
+    """Forward-fill: for specified fields, empty values inherit from the previous row.
+
+    Pure scanl — no domain knowledge, just tabular forward-fill.
+    """
+    def step(
+        acc: tuple[FlatRow | None, tuple[FlatRow, ...]],
+        row: FlatRow,
+    ) -> tuple[FlatRow | None, tuple[FlatRow, ...]]:
+        prev, filled = acc
+        replacements = (
+            {
+                f: getattr(prev, f)
+                for f in fields
+                if _is_empty(getattr(row, f)) and not _is_empty(getattr(prev, f))
+            }
+            if prev is not None
+            else {}
+        )
+        new_row = replace(row, **replacements) if replacements else row
+        return (new_row, (*filled, new_row))
+
+    result: tuple[FlatRow | None, tuple[FlatRow, ...]] = (None, ())
+    for row in rows:
+        result = step(result, row)
+    return result[1]
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +239,6 @@ def row_to_tuple(row: FlatRow) -> tuple:
         row.setsumei_code,
         row.setsumei_name,
         row.setsumei_amount or "",
-        "orphan" if row.is_orphan else "",
     )
 
 

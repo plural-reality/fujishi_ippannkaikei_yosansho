@@ -26,15 +26,7 @@ from budget_cell.types import (
 )
 
 __all__ = [
-    "Cell",
-    "FlatRow",
-    "Grid",
-    "Line",
-    "MokuRecord",
-    "PageBudget",
-    "PageGeometry",
-    "SetsuRecord",
-    "SetsumeiEntry",
-    "Word",
-    "Zaigen",
+    "Cell", "FlatRow", "Grid", "Line",
+    "MokuRecord", "PageBudget", "PageGeometry",
+    "SetsuRecord", "SetsumeiEntry", "Word", "Zaigen",
 ]

@@ -139,4 +139,3 @@ class FlatRow:
     setsumei_code: str
     setsumei_name: str
     setsumei_amount: int | None
-    is_orphan: bool  # True if 目 is on a previous page

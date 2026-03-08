@@ -1,5 +1,5 @@
 """
-Tests for budget_cell.flatten — pure flatten transforms.
+Tests for budget_cell.flatten — pure flatten transforms + generic ffill.
 """
 
 from __future__ import annotations
@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from budget_cell.types import (
+    FlatRow,
     MokuRecord,
     PageBudget,
     SetsuRecord,
@@ -21,6 +22,8 @@ from budget_cell.cells import assign_words_to_cells
 from budget_cell.parse import parse_page_budget
 from budget_cell.flatten import (
     HEADERS,
+    MOKU_FIELDS,
+    ffill,
     flatten_moku,
     flatten_orphans,
     flatten_page_budget,
@@ -90,9 +93,8 @@ class TestFlattenSetsu:
         assert rows[0].setsu_name == "積立金"
         assert rows[0].setsu_amount == 1510
 
-    def test_orphan_setsu(self) -> None:
-        rows = flatten_setsu(None, SAMPLE_SETSU, is_orphan=True)
-        assert all(r.is_orphan for r in rows)
+    def test_orphan_setsu_has_empty_moku(self) -> None:
+        rows = flatten_setsu(None, SAMPLE_SETSU)
         assert all(r.moku_name == "" for r in rows)
         assert all(r.honendo is None for r in rows)
 
@@ -117,10 +119,6 @@ class TestFlattenMoku:
         assert all(r.moku_name == "11 会計管理費" for r in rows)
         assert all(r.honendo == 85912 for r in rows)
 
-    def test_not_orphan(self) -> None:
-        rows = flatten_moku(SAMPLE_MOKU)
-        assert all(not r.is_orphan for r in rows)
-
 
 # ---------------------------------------------------------------------------
 # flatten_orphans
@@ -130,7 +128,7 @@ class TestFlattenOrphans:
     def test_basic(self) -> None:
         rows = flatten_orphans((SAMPLE_SETSU,))
         assert len(rows) == 3
-        assert all(r.is_orphan for r in rows)
+        assert all(r.moku_name == "" for r in rows)
 
     def test_empty(self) -> None:
         assert flatten_orphans(()) == ()
@@ -148,12 +146,93 @@ class TestFlattenPageBudget:
         )
         rows = flatten_page_budget(budget)
         assert len(rows) == 5
-        assert rows[0].is_orphan
-        assert not rows[-1].is_orphan
+        # First row is orphan (empty moku), last has moku
+        assert rows[0].moku_name == ""
+        assert rows[-1].moku_name == "11 会計管理費"
 
     def test_empty_budget(self) -> None:
         budget = PageBudget(moku_records=(), orphan_setsu=())
         assert flatten_page_budget(budget) == ()
+
+
+# ---------------------------------------------------------------------------
+# ffill (generic forward-fill)
+# ---------------------------------------------------------------------------
+
+class TestFfill:
+    def test_fills_empty_string_from_above(self) -> None:
+        row_with = FlatRow(
+            moku_name="目A", honendo=100, zenendo=200, hikaku=-100,
+            kokuken=None, chihousei=None, sonota=None, ippan=None,
+            setsu_number=1, setsu_name="報酬", setsu_amount=50,
+            sub_item_name="", sub_item_amount=None,
+            setsumei_code="", setsumei_name="", setsumei_amount=None,
+        )
+        row_empty = FlatRow(
+            moku_name="", honendo=None, zenendo=None, hikaku=None,
+            kokuken=None, chihousei=None, sonota=None, ippan=None,
+            setsu_number=2, setsu_name="旅費", setsu_amount=30,
+            sub_item_name="", sub_item_amount=None,
+            setsumei_code="", setsumei_name="", setsumei_amount=None,
+        )
+        filled = ffill((row_with, row_empty), MOKU_FIELDS)
+        assert filled[0].moku_name == "目A"
+        assert filled[1].moku_name == "目A"
+        assert filled[1].honendo == 100
+        assert filled[1].zenendo == 200
+
+    def test_does_not_fill_non_specified_fields(self) -> None:
+        row_with = FlatRow(
+            moku_name="目A", honendo=100, zenendo=None, hikaku=None,
+            kokuken=None, chihousei=None, sonota=None, ippan=None,
+            setsu_number=1, setsu_name="報酬", setsu_amount=50,
+            sub_item_name="", sub_item_amount=None,
+            setsumei_code="001", setsumei_name="給与", setsumei_amount=999,
+        )
+        row_empty = FlatRow(
+            moku_name="", honendo=None, zenendo=None, hikaku=None,
+            kokuken=None, chihousei=None, sonota=None, ippan=None,
+            setsu_number=2, setsu_name="旅費", setsu_amount=30,
+            sub_item_name="", sub_item_amount=None,
+            setsumei_code="", setsumei_name="", setsumei_amount=None,
+        )
+        filled = ffill((row_with, row_empty), MOKU_FIELDS)
+        # setsumei fields are NOT in MOKU_FIELDS, so they stay empty
+        assert filled[1].setsumei_code == ""
+        assert filled[1].setsumei_name == ""
+
+    def test_empty_input(self) -> None:
+        assert ffill((), MOKU_FIELDS) == ()
+
+    def test_single_row(self) -> None:
+        row = FlatRow(
+            moku_name="目A", honendo=100, zenendo=None, hikaku=None,
+            kokuken=None, chihousei=None, sonota=None, ippan=None,
+            setsu_number=1, setsu_name="報酬", setsu_amount=50,
+            sub_item_name="", sub_item_amount=None,
+            setsumei_code="", setsumei_name="", setsumei_amount=None,
+        )
+        filled = ffill((row,), MOKU_FIELDS)
+        assert filled == (row,)
+
+    def test_chains_through_multiple_empty_rows(self) -> None:
+        base = FlatRow(
+            moku_name="目B", honendo=500, zenendo=400, hikaku=100,
+            kokuken=10, chihousei=20, sonota=30, ippan=440,
+            setsu_number=1, setsu_name="報酬", setsu_amount=50,
+            sub_item_name="", sub_item_amount=None,
+            setsumei_code="", setsumei_name="", setsumei_amount=None,
+        )
+        empty = FlatRow(
+            moku_name="", honendo=None, zenendo=None, hikaku=None,
+            kokuken=None, chihousei=None, sonota=None, ippan=None,
+            setsu_number=2, setsu_name="旅費", setsu_amount=30,
+            sub_item_name="", sub_item_amount=None,
+            setsumei_code="", setsumei_name="", setsumei_amount=None,
+        )
+        filled = ffill((base, empty, empty, empty), MOKU_FIELDS)
+        assert all(r.moku_name == "目B" for r in filled)
+        assert all(r.honendo == 500 for r in filled)
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +246,7 @@ class TestRowToTuple:
             assert len(row_to_tuple(r)) == len(HEADERS)
 
     def test_none_replaced_with_empty(self) -> None:
-        row = flatten_setsu(None, SAMPLE_SETSU_EMPTY, is_orphan=True)[0]
+        row = flatten_setsu(None, SAMPLE_SETSU_EMPTY)[0]
         t = row_to_tuple(row)
         assert t[1] == ""
 
@@ -205,12 +284,12 @@ class TestIntegration106:
     def test_has_rows(self) -> None:
         assert len(self.flat) >= 10
 
-    def test_moku_context_propagated(self) -> None:
-        moku_rows = [r for r in self.flat if not r.is_orphan]
+    def test_moku_rows_have_context(self) -> None:
+        moku_rows = [r for r in self.flat if r.moku_name != ""]
         assert all("会計管理費" in r.moku_name for r in moku_rows)
 
-    def test_orphan_rows_present(self) -> None:
-        orphan_rows = [r for r in self.flat if r.is_orphan]
+    def test_orphan_rows_have_empty_moku(self) -> None:
+        orphan_rows = [r for r in self.flat if r.moku_name == ""]
         assert len(orphan_rows) >= 1
 
     def test_known_setsumei(self) -> None:
