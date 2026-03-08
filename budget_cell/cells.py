@@ -73,14 +73,26 @@ def assign_words_to_cells(
     page_bottom = max((y for y in grid.row_boundaries), default=geom.height) + 20
 
     return tuple(
-        Cell(
-            row=r,
-            col=c,
-            x0=grid.col_boundaries[c],
-            y0=grid.row_boundaries[r],
-            x1=grid.col_boundaries[c + 1] if c + 1 < len(grid.col_boundaries) else geom.width,
-            y1=_row_bottom(r, grid.row_boundaries, page_bottom),
-            text=" ".join(w.text for w in sorted(words, key=lambda w: w.x0)),
-        )
-        for (r, c), words in sorted(cell_map.items())
+        _build_cell(r, c, sorted_ws, grid, geom.width, page_bottom)
+        for (r, c), ws in sorted(cell_map.items())
+        for sorted_ws in (tuple(sorted(ws, key=lambda w: w.x0)),)
+    )
+
+
+def _build_cell(
+    r: int, c: int,
+    sorted_words: tuple[Word, ...],
+    grid: Grid,
+    page_width: float,
+    page_bottom: float,
+) -> Cell:
+    return Cell(
+        row=r,
+        col=c,
+        x0=grid.col_boundaries[c],
+        y0=grid.row_boundaries[r],
+        x1=grid.col_boundaries[c + 1] if c + 1 < len(grid.col_boundaries) else page_width,
+        y1=_row_bottom(r, grid.row_boundaries, page_bottom),
+        text=" ".join(w.text for w in sorted_words),
+        words=sorted_words,
     )

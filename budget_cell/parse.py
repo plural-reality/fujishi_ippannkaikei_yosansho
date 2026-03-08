@@ -22,6 +22,7 @@ from budget_cell.types import (
     PageBudget,
     SetsuRecord,
     SetsumeiEntry,
+    Word,
     Zaigen,
 )
 
@@ -65,48 +66,83 @@ def parse_setsu_text(text: str) -> tuple[int, str] | None:
     return (int(m.group(1)), m.group(2)) if m else None
 
 
-def parse_setsumei_line(text: str) -> SetsumeiEntry:
-    """Parse a single line from the 説明 column into a typed entry."""
-    stripped = text.strip()
-    m = re.match(r"^(\d{3})\s+(.+?)\s+([\d,]+)$", stripped)
+# ---------------------------------------------------------------------------
+# Coordinate-based setsumei parsing (replaces regex-based parse_setsumei_line)
+# ---------------------------------------------------------------------------
+
+_AMOUNT_MARGIN = 50.0   # words within this distance of cell right edge → amount
+_CODE_MARGIN = 25.0     # words within this distance of cell left edge + 3-digit → code
+_CODE_RE = re.compile(r"^\d{3}$")
+_AMOUNT_RE = re.compile(r"^[\d,△\-]+$")
+
+
+def _is_amount_word(w: Word, cell_x1: float) -> bool:
+    """Word is near cell right edge and looks like a number."""
+    return cell_x1 - w.x1 < _AMOUNT_MARGIN and bool(_AMOUNT_RE.match(w.text))
+
+
+def _is_code_word(w: Word, cell_x0: float) -> bool:
+    """Word is near cell left edge and is a 3-digit code."""
+    return w.x0 - cell_x0 < _CODE_MARGIN and bool(_CODE_RE.match(w.text))
+
+
+def parse_setsumei_cell(cell: Cell) -> SetsumeiEntry:
+    """Parse a setsumei cell using word coordinates.
+
+    Layout in the 説明 column:
+      [code]  [name ...]  [amount]
+       left     middle      right-aligned
+
+    Coordinate-based separation is strictly more robust than regex.
+    """
+    words = cell.words
     return (
-        SetsumeiEntry("coded", m.group(1), m.group(2), parse_amount(m.group(3)))
-        if m else _parse_setsumei_no_full_code(stripped)
+        SetsumeiEntry("text", None, "", None)
+        if not words
+        else _parse_setsumei_from_words(words, cell.x0, cell.x1)
     )
 
 
-def _parse_setsumei_no_full_code(stripped: str) -> SetsumeiEntry:
-    m = re.match(r"^(\d{3})\s+(.+)$", stripped)
-    return (
-        SetsumeiEntry("coded", m.group(1), m.group(2), None)
-        if m else _parse_setsumei_text(stripped)
-    )
+def _parse_setsumei_from_words(
+    words: tuple[Word, ...], cell_x0: float, cell_x1: float,
+) -> SetsumeiEntry:
+    amount_ws = tuple(w for w in words if _is_amount_word(w, cell_x1))
+    code_ws = tuple(w for w in words if _is_code_word(w, cell_x0))
+    name_ws = tuple(w for w in words if w not in amount_ws and w not in code_ws)
 
+    code = code_ws[0].text if code_ws else None
+    name = " ".join(w.text for w in name_ws)
+    amount = parse_amount(" ".join(w.text for w in amount_ws)) if amount_ws else None
 
-def _parse_setsumei_text(stripped: str) -> SetsumeiEntry:
-    m = re.match(r"^(.+?)\s+([\d,]+)$", stripped)
-    return (
-        SetsumeiEntry("text", None, m.group(1), parse_amount(m.group(2)))
-        if m and not re.search(r"\d$", m.group(1))
-        else SetsumeiEntry("text", None, stripped, None)
+    return SetsumeiEntry(
+        kind="coded" if code else "text",
+        code=code,
+        name=name,
+        amount=amount,
     )
 
 
 # ---------------------------------------------------------------------------
-# Cell index (immutable lookup)
+# Cell index (immutable lookup) — now stores Cell objects
 # ---------------------------------------------------------------------------
 
-CellIndex = Mapping[tuple[int, int], str]
+CellIndex = Mapping[tuple[int, int], Cell]
 
 
 def build_cell_index(cells: Sequence[Cell]) -> CellIndex:
-    """Immutable (row, col) → text mapping."""
-    return MappingProxyType({(c.row, c.col): c.text for c in cells})
+    """Immutable (row, col) → Cell mapping."""
+    return MappingProxyType({(c.row, c.col): c for c in cells})
+
+
+def cell_at(idx: CellIndex, row: int, col: int) -> Cell | None:
+    """Lookup cell. None if absent."""
+    return idx.get((row, col))
 
 
 def text_at(idx: CellIndex, row: int, col: int) -> str | None:
     """Lookup cell text. None if absent."""
-    return idx.get((row, col))
+    c = idx.get((row, col))
+    return c.text if c is not None else None
 
 
 def all_rows(cells: Sequence[Cell]) -> tuple[int, ...]:
@@ -132,7 +168,7 @@ def _normalize(text: str) -> str:
 def is_header_row(idx: CellIndex, row: int) -> bool:
     """True if any cell in this row contains a known header keyword."""
     texts = frozenset(
-        _normalize(v) for (r, _), v in idx.items() if r == row
+        _normalize(v.text) for (r, _), v in idx.items() if r == row
     )
     return bool(texts & _HEADER_TOKENS)
 
@@ -329,14 +365,15 @@ def build_setsu_record(
         if _is_sub_item(idx, r)
     )
 
+    # Collect setsumei using coordinate-based parsing
     setsumei_rows = (
         ((setsu_row,) if setsu_row is not None else ())
         + tuple(effective)
     )
     setsumei = tuple(
-        parse_setsumei_line(t)
+        parse_setsumei_cell(cell)
         for r in setsumei_rows
-        if (t := text_at(idx, r, COL_SETSUMEI)) and t.strip()
+        if (cell := cell_at(idx, r, COL_SETSUMEI)) is not None and cell.text.strip()
     )
 
     return SetsuRecord(

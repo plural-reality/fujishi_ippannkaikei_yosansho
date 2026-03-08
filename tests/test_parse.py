@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from budget_cell.types import Cell, SetsumeiEntry
+from budget_cell.types import Cell, SetsumeiEntry, Word
 from budget_cell.extract import extract_geometry_from_path
 from budget_cell.grid import build_grid
 from budget_cell.cells import assign_words_to_cells
@@ -26,8 +26,8 @@ from budget_cell.parse import (
     is_header_row,
     parse_amount,
     parse_page_budget,
+    parse_setsumei_cell,
     parse_setsu_text,
-    parse_setsumei_line,
     text_at,
 )
 
@@ -87,34 +87,88 @@ class TestParseSetsuText:
 
 
 # ---------------------------------------------------------------------------
-# parse_setsumei_line
+# parse_setsumei_cell
 # ---------------------------------------------------------------------------
 
-class TestParseSetsumeiLine:
+class TestParseSetsumeiCell:
+    """Test coordinate-based setsumei parsing.
+
+    Cell layout: x0=0, x1=100.
+    Code threshold: w.x0 - cell.x0 < 25 (i.e., w.x0 < 25).
+    Amount threshold: cell.x1 - w.x1 < 50 (i.e., w.x1 > 50).
+    """
+
     def test_coded_with_amount(self) -> None:
-        result = parse_setsumei_line("001 財政事務費 2,498")
+        # "001 財政事務費 2,498"
+        cell = Cell(row=0, col=11, x0=0, y0=0, x1=100, y1=10,
+                    text="001 財政事務費 2,498",
+                    words=(
+                        Word(x0=5, y0=2, x1=20, y1=8, text="001"),
+                        Word(x0=25, y0=2, x1=48, y1=8, text="財政事務費"),
+                        Word(x0=70, y0=2, x1=95, y1=8, text="2,498"),
+                    ))
+        result = parse_setsumei_cell(cell)
         assert result == SetsumeiEntry("coded", "001", "財政事務費", 2498)
 
     def test_coded_without_amount(self) -> None:
-        result = parse_setsumei_line("001 パートタイム会計年度任用職員")
+        # "001 パートタイム会計年度任用職員"
+        cell = Cell(row=0, col=11, x0=0, y0=0, x1=100, y1=10,
+                    text="001 パートタイム会計年度任用職員",
+                    words=(
+                        Word(x0=5, y0=2, x1=20, y1=8, text="001"),
+                        Word(x0=25, y0=2, x1=48, y1=8, text="パートタイム会計年度任用職員"),
+                    ))
+        result = parse_setsumei_cell(cell)
         assert result == SetsumeiEntry("coded", "001", "パートタイム会計年度任用職員", None)
 
     def test_text_with_amount(self) -> None:
-        result = parse_setsumei_line("地方財務協会賛助会費 40")
+        # "地方財務協会賛助会費 40"
+        cell = Cell(row=0, col=11, x0=0, y0=0, x1=100, y1=10,
+                    text="地方財務協会賛助会費 40",
+                    words=(
+                        Word(x0=25, y0=2, x1=48, y1=8, text="地方財務協会賛助会費"),
+                        Word(x0=80, y0=2, x1=92, y1=8, text="40"),
+                    ))
+        result = parse_setsumei_cell(cell)
         assert result == SetsumeiEntry("text", None, "地方財務協会賛助会費", 40)
 
     def test_plain_text(self) -> None:
-        result = parse_setsumei_line("統一的な基準による財務書類整備")
+        # "統一的な基準による財務書類整備"
+        cell = Cell(row=0, col=11, x0=0, y0=0, x1=100, y1=10,
+                    text="統一的な基準による財務書類整備",
+                    words=(
+                        Word(x0=25, y0=2, x1=48, y1=8, text="統一的な基準による財務書類整備"),
+                    ))
+        result = parse_setsumei_cell(cell)
         assert result == SetsumeiEntry("text", None, "統一的な基準による財務書類整備", None)
 
     def test_parenthetical(self) -> None:
-        result = parse_setsumei_line("（定数外）")
+        # "（定数外）"
+        cell = Cell(row=0, col=11, x0=0, y0=0, x1=100, y1=10,
+                    text="（定数外）",
+                    words=(
+                        Word(x0=30, y0=2, x1=48, y1=8, text="（定数外）"),
+                    ))
+        result = parse_setsumei_cell(cell)
         assert result == SetsumeiEntry("text", None, "（定数外）", None)
 
     def test_text_with_number_suffix(self) -> None:
-        result = parse_setsumei_line("事務補助 1人")
+        # "事務補助 1人" — neither word is near right edge or 3-digit code
+        cell = Cell(row=0, col=11, x0=0, y0=0, x1=100, y1=10,
+                    text="事務補助 1人",
+                    words=(
+                        Word(x0=30, y0=2, x1=45, y1=8, text="事務補助"),
+                        Word(x0=46, y0=2, x1=49, y1=8, text="1人"),
+                    ))
+        result = parse_setsumei_cell(cell)
         assert result.kind == "text"
         assert "事務補助" in result.name
+
+    def test_empty_cell(self) -> None:
+        cell = Cell(row=0, col=11, x0=0, y0=0, x1=100, y1=10,
+                    text="", words=())
+        result = parse_setsumei_cell(cell)
+        assert result == SetsumeiEntry("text", None, "", None)
 
 
 # ---------------------------------------------------------------------------

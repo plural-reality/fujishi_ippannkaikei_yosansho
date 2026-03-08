@@ -31,7 +31,7 @@ class TestImmutability:
             word.text = "bye"  # type: ignore[misc]
 
     def test_cell_frozen(self) -> None:
-        cell = Cell(row=0, col=0, x0=0, y0=0, x1=10, y1=10, text="hi")
+        cell = Cell(row=0, col=0, x0=0, y0=0, x1=10, y1=10, text="hi", words=())
         with pytest.raises(AttributeError):
             cell.text = "bye"  # type: ignore[misc]
 

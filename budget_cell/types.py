@@ -63,6 +63,7 @@ class Cell:
     x1: float
     y1: float
     text: str
+    words: tuple[Word, ...]  # original Words, sorted by x0
 
 
 # ---------------------------------------------------------------------------
