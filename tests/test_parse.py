@@ -176,17 +176,29 @@ class TestParseSetsumeiCell:
 # ---------------------------------------------------------------------------
 
 SAMPLE_CELLS = (
-    Cell(row=0, col=0, x0=0, y0=0, x1=10, y1=10, text="目"),
-    Cell(row=0, col=1, x0=10, y0=0, x1=20, y1=10, text="千円"),
-    Cell(row=1, col=0, x0=0, y0=10, x1=10, y1=20, text="11 会計管理費"),
-    Cell(row=1, col=1, x0=10, y0=10, x1=20, y1=20, text="85,912"),
-    Cell(row=1, col=9, x0=50, y0=10, x1=60, y1=20, text="1 報酬"),
-    Cell(row=1, col=10, x0=60, y0=10, x1=70, y1=20, text="829"),
-    Cell(row=1, col=11, x0=70, y0=10, x1=100, y1=20, text="001 給与費 998"),
-    Cell(row=2, col=9, x0=50, y0=20, x1=60, y1=30, text="4 共済費"),
-    Cell(row=2, col=10, x0=60, y0=20, x1=70, y1=30, text="127"),
-    Cell(row=3, col=11, x0=70, y0=30, x1=100, y1=40, text="（定数外）"),
-    Cell(row=4, col=11, x0=70, y0=40, x1=100, y1=50, text="事務補助 1人"),
+    Cell(row=0, col=0, x0=0, y0=0, x1=10, y1=10, text="目", words=()),
+    Cell(row=0, col=1, x0=10, y0=0, x1=20, y1=10, text="千円", words=()),
+    Cell(row=1, col=0, x0=0, y0=10, x1=10, y1=20, text="11 会計管理費", words=()),
+    Cell(row=1, col=1, x0=10, y0=10, x1=20, y1=20, text="85,912", words=()),
+    Cell(row=1, col=9, x0=50, y0=10, x1=60, y1=20, text="1 報酬", words=()),
+    Cell(row=1, col=10, x0=60, y0=10, x1=70, y1=20, text="829", words=()),
+    Cell(row=1, col=11, x0=70, y0=10, x1=100, y1=20, text="001 給与費 998",
+         words=(
+             Word(x0=72, y0=12, x1=80, y1=18, text="001"),
+             Word(x0=82, y0=12, x1=90, y1=18, text="給与費"),
+             Word(x0=92, y0=12, x1=98, y1=18, text="998"),
+         )),
+    Cell(row=2, col=9, x0=50, y0=20, x1=60, y1=30, text="4 共済費", words=()),
+    Cell(row=2, col=10, x0=60, y0=20, x1=70, y1=30, text="127", words=()),
+    Cell(row=3, col=11, x0=70, y0=30, x1=100, y1=40, text="（定数外）",
+         words=(
+             Word(x0=80, y0=32, x1=90, y1=38, text="（定数外）"),
+         )),
+    Cell(row=4, col=11, x0=70, y0=40, x1=100, y1=50, text="事務補助 1人",
+         words=(
+             Word(x0=80, y0=42, x1=88, y1=48, text="事務補助"),
+             Word(x0=89, y0=42, x1=94, y1=48, text="1人"),
+         )),
 )
 
 
@@ -255,11 +267,11 @@ class TestClassifyRow:
 # ---------------------------------------------------------------------------
 
 CONTINUATION_CELLS = (
-    Cell(row=0, col=9, x0=50, y0=0, x1=60, y1=10, text="18 負担金、補助"),
-    Cell(row=0, col=10, x0=60, y0=0, x1=70, y1=10, text="71"),
-    Cell(row=1, col=9, x0=50, y0=10, x1=60, y1=20, text="及び交付金"),
-    Cell(row=2, col=9, x0=50, y0=20, x1=60, y1=30, text="負担金"),
-    Cell(row=2, col=10, x0=60, y0=20, x1=70, y1=30, text="71"),
+    Cell(row=0, col=9, x0=50, y0=0, x1=60, y1=10, text="18 負担金、補助", words=()),
+    Cell(row=0, col=10, x0=60, y0=0, x1=70, y1=10, text="71", words=()),
+    Cell(row=1, col=9, x0=50, y0=10, x1=60, y1=20, text="及び交付金", words=()),
+    Cell(row=2, col=9, x0=50, y0=20, x1=60, y1=30, text="負担金", words=()),
+    Cell(row=2, col=10, x0=60, y0=20, x1=70, y1=30, text="71", words=()),
 )
 
 
@@ -334,9 +346,10 @@ class TestGroupBySetsu:
 
     def test_orphan_before_setsu(self) -> None:
         cells = (
-            Cell(row=0, col=11, x0=70, y0=0, x1=100, y1=10, text="some text"),
-            Cell(row=1, col=9, x0=50, y0=10, x1=60, y1=20, text="1 報酬"),
-            Cell(row=1, col=10, x0=60, y0=10, x1=70, y1=20, text="100"),
+            Cell(row=0, col=11, x0=70, y0=0, x1=100, y1=10, text="some text",
+                 words=(Word(x0=80, y0=2, x1=90, y1=8, text="some text"),)),
+            Cell(row=1, col=9, x0=50, y0=10, x1=60, y1=20, text="1 報酬", words=()),
+            Cell(row=1, col=10, x0=60, y0=10, x1=70, y1=20, text="100", words=()),
         )
         idx = build_cell_index(cells)
         groups = group_rows_by_setsu(idx, (0, 1))
@@ -375,7 +388,8 @@ class TestBuildSetsuRecord:
 
     def test_orphan_setsu(self) -> None:
         cells = (
-            Cell(row=0, col=11, x0=70, y0=0, x1=100, y1=10, text="some description"),
+            Cell(row=0, col=11, x0=70, y0=0, x1=100, y1=10, text="some description",
+                 words=(Word(x0=80, y0=2, x1=90, y1=8, text="some description"),)),
         )
         idx = build_cell_index(cells)
         record = build_setsu_record(idx, None, (0,))

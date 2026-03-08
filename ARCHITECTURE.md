@@ -10,7 +10,7 @@
 extract_page_geometry :: pdfplumber.Page -> PageGeometry
 --   PageGeometry = { width, height, lines :: [Line], words :: [Word] }
 --   Line = { x0, y0, x1, y1, linewidth }
---   Word = { x0, y0, x1, y1, text }
+--   Word = { x0, y0, x1, y1, text }        -- 絶対座標 (PDF座標系)
 
 
 -- ============================================================
@@ -36,10 +36,11 @@ build_grid :: PageGeometry -> Grid
 -- ============================================================
 
 assign_words_to_cells :: PageGeometry -> Grid -> [Cell]
---   Cell = { row, col, x0, y0, x1, y1, text }
+--   Cell = { row, col, x0, y0, x1, y1, text, words :: [Word] }
 --
 --   各 Word の X中点 → col, Y上端 → row にマッピング
---   同一 (row, col) の Word は x0 でソートして空白結合
+--   同一 (row, col) の Word は x0 でソートして空白結合 → text
+--   元の Word 列はそのまま保持 → words (絶対座標)
 --   Grid 外の Word は捨てる
 --
 --   内部:
@@ -53,7 +54,9 @@ assign_words_to_cells :: PageGeometry -> Grid -> [Cell]
 
 -- 3a. Cell をインデックス化
 build_cell_index :: [Cell] -> CellIndex
---   CellIndex = Map (Int, Int) String   -- (row, col) -> text
+--   CellIndex = Map (Int, Int) Cell          -- (row, col) -> Cell
+--   text_at  :: CellIndex -> Int -> Int -> Maybe String
+--   cell_at  :: CellIndex -> Int -> Int -> Maybe Cell
 
 -- 3b. ヘッダー行検出
 detect_header_rows :: [Cell] -> FrozenSet Int
@@ -90,11 +93,18 @@ group_rows_by_setsu :: CellIndex -> [Int] -> [(Maybe Int, [Int])]
 build_setsu_record :: CellIndex -> Maybe Int -> [Int] -> SetsuRecord
 --   continuation 行をスキップして節名を結合
 --   sub_item 行を小区分として収集
---   setsu行 + 子行から説明を収集
+--   setsu行 + 子行から説明を座標ベースで収集
 
 build_moku_record :: CellIndex -> Int -> [Int] -> MokuRecord
 --   目行から: name, honendo, zenendo, hikaku, zaigen を parse_amount
 --   子行を group_rows_by_setsu → map build_setsu_record
+
+-- 3f'. 説明列の座標ベースパース (regex を置き換え)
+parse_setsumei_cell :: Cell -> SetsumeiEntry
+--   Cell.words の絶対座標を使い、セル境界との相対位置で分類:
+--     code:   w.x0 - cell.x0 < 25pt AND 3桁数字 → コード
+--     amount: cell.x1 - w.x1 < 50pt AND 数値パターン → 金額 (右寄せ)
+--     name:   上記いずれでもない → 名前
 
 -- 3g. トップレベル合成
 parse_page_budget :: [Cell] -> PageBudget
@@ -103,7 +113,7 @@ parse_page_budget :: [Cell] -> PageBudget
 --   = build_cell_index
 --     >>> classify_all_rows
 --     >>> group_rows_by_moku
---     >>> partition (isJust . fst)     -- moku有り / orphan
+--     >>> partition (isJust . fst)
 --     >>> bimap (map build_moku_record) (flatMap (group_rows_by_setsu >>> map build_setsu_record))
 
 
@@ -144,6 +154,40 @@ Col  Name         Source         Content
 10   COL_KINGAKU  右表           金額
 11   COL_SETSUMEI 右表           説明
 ```
+
+## Coordinate System
+
+全座標は**PDF絶対座標系** (pdfplumber 由来, 左上原点, pt単位)。
+
+- `Word.x0, .y0, .x1, .y1` — 絶対座標
+- `Cell.x0, .y0, .x1, .y1` — Grid の col/row boundary から算出 (絶対座標)
+- `Cell.words` — 元の Word 列をそのまま保持 (絶対座標)
+
+セル内のインデントレベルは `w.x0 - cell.x0` で算出:
+```
+offset < 10pt  → level 0 (事業コード 002, 003)
+offset < 20pt  → level 1 (事業コード 001 + 名前)
+offset >= 20pt → level 2 (テキスト説明)
+```
+
+## 説明列の座標ベースパース
+
+`parse_setsumei_cell` は regex を使わず Word 座標で構造を判定:
+
+```
+セル内レイアウト:
+  [code]  [name ...]              [amount]
+   左端     中央                    右寄せ
+
+判定ルール:
+  code:   w.x0 - cell.x0 < 25pt AND /^\d{3}$/
+  amount: cell.x1 - w.x1 < 50pt AND /^[\d,△\-]+$/
+  name:   上記いずれでもない Word を空白結合
+```
+
+regex ベースの `parse_setsumei_line` を置き換え。座標分離により:
+- 「事務補助 1人」の「1人」を金額と誤認する問題が解消
+- コード / 名前 / 金額の境界が確定的
 
 ## Header Detection
 
