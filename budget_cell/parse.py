@@ -75,9 +75,7 @@ _AMOUNT_MARGIN = 50.0   # words within this distance of cell right edge → amou
 _CODE_MARGIN = 25.0     # words within this distance of cell left edge + 3-digit → code
 _LINE_Y_TOLERANCE = 1.2  # same logical line if y-center distance <= this value
 _INDENT_NOISE = 2.5
-_INDENT_STEP_DEFAULT = 7.0
-_INDENT_PREFIX = "  "
-_SUPPLEMENT_SEPARATOR = " / "
+_CODE_TO_NAME_OFFSET_DEFAULT = 14.0
 _CODE_RE = re.compile(r"^\d{3}$")
 _AMOUNT_RE = re.compile(r"^[\d,△\-]+$")
 
@@ -168,13 +166,14 @@ def split_words_into_lines(words: Sequence[Word]) -> tuple[tuple[Word, ...], ...
 
 def _parse_setsumei_line(
     words: tuple[Word, ...], cell_x0: float, cell_x1: float,
-) -> tuple[SetsumeiEntry, bool, float | None]:
+) -> tuple[SetsumeiEntry, bool, float | None, float | None]:
     """Parse one logical line.
 
     Returns:
       - entry
       - has_amount (right-edge numeric token exists)
-      - left_x (line start x for indentation inference)
+      - code_x (left x of code token, if any)
+      - name_x (left x of name token, if any)
     """
     amount_ws = tuple(w for w in words if _is_amount_word(w, cell_x1))
     code_ws = tuple(w for w in words if _is_code_word(w, cell_x0))
@@ -188,19 +187,14 @@ def _parse_setsumei_line(
         name=" ".join(w.text for w in name_ws),
         amount=amount,
     )
-    left_x = (
-        code_ws[0].x0
-        if code_ws
-        else name_ws[0].x0
-        if name_ws
-        else words[0].x0
-        if words
-        else None
-    )
-    return (entry, bool(amount_ws), left_x)
+    code_x = code_ws[0].x0 if code_ws else None
+    name_x = name_ws[0].x0 if name_ws else None
+    return (entry, bool(amount_ws), code_x, name_x)
 
 
-def parse_setsumei_cell_lines(cell: Cell) -> tuple[tuple[SetsumeiEntry, bool, float | None], ...]:
+def parse_setsumei_cell_lines(
+    cell: Cell,
+) -> tuple[tuple[SetsumeiEntry, bool, float | None, float | None], ...]:
     """Parse one setsumei cell into logical line entries with amount-anchor flag."""
     return tuple(
         _parse_setsumei_line(line_words, cell.x0, cell.x1)
@@ -208,107 +202,99 @@ def parse_setsumei_cell_lines(cell: Cell) -> tuple[tuple[SetsumeiEntry, bool, fl
     )
 
 
-def _join_with_separator(base: str, extra: str, separator: str) -> str:
+def _apply_level(entry: SetsumeiEntry, level: int) -> SetsumeiEntry:
+    """Attach 1-based hierarchical level to entry without mutating text."""
+    return replace(entry, level=level)
+
+
+def _cluster_left_positions(values: Sequence[float], tol: float) -> tuple[float, ...]:
+    if not values:
+        return ()
+    sorted_values = tuple(sorted(values))
+    clusters: tuple[tuple[float, int], ...] = ()
+    for v in sorted_values:
+        clusters = (
+            ((v, 1),)
+            if not clusters
+            else (
+                (*clusters[:-1], (((clusters[-1][0] * clusters[-1][1]) + v) / (clusters[-1][1] + 1), clusters[-1][1] + 1))
+                if abs(v - clusters[-1][0]) <= tol
+                else (*clusters, (v, 1))
+            )
+        )
+    return tuple(center for center, _ in clusters)
+
+
+def _resolve_level_anchors(
+    line_entries: Sequence[tuple[SetsumeiEntry, bool, float | None, float | None]],
+) -> tuple[float, tuple[float, ...]]:
+    code_name_offsets = tuple(
+        name_x - code_x
+        for _, _, code_x, name_x in line_entries
+        if code_x is not None and name_x is not None and name_x >= code_x
+    )
+    code_to_name_offset = (
+        min(code_name_offsets)
+        if code_name_offsets
+        else _CODE_TO_NAME_OFFSET_DEFAULT
+    )
+
+    def normalized_left(code_x: float | None, name_x: float | None) -> float | None:
+        return (
+            code_x
+            if code_x is not None
+            else (name_x - code_to_name_offset if name_x is not None else None)
+        )
+
+    anchor_lefts = tuple(
+        left
+        for _, has_amount, code_x, name_x in line_entries
+        for left in (normalized_left(code_x, name_x),)
+        if left is not None and (code_x is not None or has_amount)
+    )
+    fallback_lefts = tuple(
+        left
+        for _, _, code_x, name_x in line_entries
+        for left in (normalized_left(code_x, name_x),)
+        if left is not None
+    )
+    anchors = _cluster_left_positions(
+        anchor_lefts if anchor_lefts else fallback_lefts,
+        _INDENT_NOISE,
+    )
     return (
-        extra
-        if not base
-        else base
-        if not extra
-        else f"{base}{separator}{extra}"
+        code_to_name_offset,
+        anchors if anchors else (0.0,),
     )
 
 
-def _supplement_text(entry: SetsumeiEntry) -> str:
-    coded_prefix = f"{entry.code} " if entry.code else ""
-    return (coded_prefix + entry.name).strip()
-
-
-def _merge_supplement_line(base: SetsumeiEntry, supplement: SetsumeiEntry) -> SetsumeiEntry:
-    """Attach a non-amount supplement line to a base entry."""
-    return replace(
-        base,
-        supplement=_join_with_separator(
-            base.supplement,
-            _supplement_text(supplement),
-            _SUPPLEMENT_SEPARATOR,
-        ),
-        amount=base.amount if base.amount is not None else supplement.amount,
+def _nearest_level(left: float | None, anchors: Sequence[float]) -> int:
+    if left is None:
+        return 1
+    nearest = min(
+        range(len(anchors)),
+        key=lambda i: abs(left - anchors[i]),
     )
-
-
-def _indent_level(left_x: float | None, base_x: float, step: float) -> int:
-    if left_x is None:
-        return 0
-    dx = left_x - base_x
-    return (
-        0
-        if dx <= _INDENT_NOISE
-        else max(0, int(round(dx / step)))
-    )
-
-
-def _apply_indent(entry: SetsumeiEntry, level: int) -> SetsumeiEntry:
-    return (
-        entry
-        if level <= 0 or not entry.name
-        else replace(entry, name=f"{_INDENT_PREFIX * level}{entry.name}")
-    )
-
-
-def _resolve_indent_scale(
-    line_entries: Sequence[tuple[SetsumeiEntry, bool, float | None]],
-) -> tuple[float, float]:
-    amount_lefts = tuple(
-        left_x
-        for _, has_amount, left_x in line_entries
-        if has_amount and left_x is not None
-    )
-    all_lefts = tuple(
-        left_x
-        for _, _, left_x in line_entries
-        if left_x is not None
-    )
-    base = (
-        min(amount_lefts)
-        if amount_lefts
-        else min(all_lefts)
-        if all_lefts
-        else 0.0
-    )
-    deltas = tuple(sorted(
-        left_x - base
-        for left_x in amount_lefts
-        if left_x - base > _INDENT_NOISE
-    ))
-    step = deltas[0] if deltas else _INDENT_STEP_DEFAULT
-    return (base, step)
+    return nearest + 1
 
 
 def fold_setsumei_lines(
-    line_entries: Sequence[tuple[SetsumeiEntry, bool, float | None]],
+    line_entries: Sequence[tuple[SetsumeiEntry, bool, float | None, float | None]],
 ) -> tuple[SetsumeiEntry, ...]:
-    """Fold line-level entries into logical setsumei entries.
+    """Convert line-level entries into semantic entries with hierarchical level."""
+    code_to_name_offset, anchors = _resolve_level_anchors(line_entries)
 
-    Rule:
-      - amount line: starts a new entry
-      - non-amount line: attaches to the previous entry as supplement
-      - if there is no previous entry, keep it as a standalone entry
-    """
-    base_x, indent_step = _resolve_indent_scale(line_entries)
-
-    def step(
-        acc: tuple[SetsumeiEntry, ...],
-        item: tuple[SetsumeiEntry, bool, float | None],
-    ) -> tuple[SetsumeiEntry, ...]:
-        entry, has_amount, left_x = item
-        indented = _apply_indent(entry, _indent_level(left_x, base_x, indent_step))
+    def normalized_left(code_x: float | None, name_x: float | None) -> float | None:
         return (
-            (*acc, indented)
-            if has_amount or not acc
-            else (*acc[:-1], _merge_supplement_line(acc[-1], entry))
+            code_x
+            if code_x is not None
+            else (name_x - code_to_name_offset if name_x is not None else None)
         )
 
-    return reduce(step, line_entries, ())
+    return tuple(
+        _apply_level(entry, _nearest_level(normalized_left(code_x, name_x), anchors))
+        for entry, _, code_x, name_x in line_entries
+    )
 
 
 def parse_setsumei_cells(cells: Sequence[Cell]) -> tuple[SetsumeiEntry, ...]:

@@ -34,7 +34,7 @@ HEADERS: tuple[str, ...] = (
     "国県支出金", "地方債", "その他", "一般財源",
     "節番号", "節名", "節金額",
     "小区分", "小区分金額",
-    "事業コード", "説明", "説明補足", "説明金額",
+    "事業コード", "説明", "説明金額",
 )
 
 MOKU_FIELDS: tuple[str, ...] = (
@@ -75,8 +75,8 @@ def _setsumei_row(
         sub_item_name="",
         sub_item_amount=None,
         setsumei_code=entry.code or "",
+        setsumei_level=entry.level,
         setsumei_name=entry.name,
-        setsumei_supplement=entry.supplement,
         setsumei_amount=entry.amount,
     )
 
@@ -104,8 +104,8 @@ def _sub_item_row(
         sub_item_name=name,
         sub_item_amount=amount,
         setsumei_code="",
+        setsumei_level=None,
         setsumei_name="",
-        setsumei_supplement="",
         setsumei_amount=None,
     )
 
@@ -131,8 +131,8 @@ def _setsu_only_row(
         sub_item_name="",
         sub_item_amount=None,
         setsumei_code="",
+        setsumei_level=None,
         setsumei_name="",
-        setsumei_supplement="",
         setsumei_amount=None,
     )
 
@@ -267,7 +267,6 @@ def row_to_tuple(row: FlatRow) -> tuple:
         row.sub_item_amount or "",
         row.setsumei_code,
         row.setsumei_name,
-        row.setsumei_supplement,
         row.setsumei_amount or "",
     )
 

@@ -25,31 +25,87 @@ from budget_cell.merge import merge_rows
 from budget_cell.section import split_page_sections
 from budget_cell.parse import parse_page_budget
 from budget_cell.flatten import (
-    HEADERS, FFILL_FIELDS,
+    FFILL_FIELDS,
     flatten_all_pages, label_section, ffill,
-    row_to_tuple,
 )
-from budget_cell.types import Cell, Grid, PageGeometry, PageHeader
+from budget_cell.types import Cell, FlatRow, Grid, PageGeometry, PageHeader
 
 
-def _write_excel(rows: tuple, dst_path: str) -> None:
+_BASE_HEADERS: tuple[str, ...] = (
+    "款", "項",
+    "目", "本年度予算額", "前年度予算額", "比較",
+    "国県支出金", "地方債", "その他", "一般財源",
+    "節番号", "節名", "節金額",
+    "小区分", "小区分金額",
+    "事業コード",
+)
+
+
+def _max_setsumei_level(rows: tuple[FlatRow, ...]) -> int:
+    levels = tuple(
+        r.setsumei_level
+        for r in rows
+        if r.setsumei_level is not None
+    )
+    return max(levels) if levels else 1
+
+
+def _excel_headers(max_level: int) -> tuple[str, ...]:
+    return (
+        *_BASE_HEADERS,
+        *(f"説明L{i}" for i in range(1, max_level + 1)),
+        "説明金額",
+    )
+
+
+def _excel_row_tuple(row: FlatRow, max_level: int) -> tuple:
+    level_cells = [""] * max_level
+    if row.setsumei_name and row.setsumei_level is not None:
+        idx = row.setsumei_level - 1
+        if 0 <= idx < max_level:
+            level_cells[idx] = row.setsumei_name
+    return (
+        row.kan_name,
+        row.kou_name,
+        row.moku_name,
+        row.honendo or "",
+        row.zenendo or "",
+        row.hikaku or "",
+        row.kokuken or "",
+        row.chihousei or "",
+        row.sonota or "",
+        row.ippan or "",
+        row.setsu_number or "",
+        row.setsu_name,
+        row.setsu_amount or "",
+        row.sub_item_name,
+        row.sub_item_amount or "",
+        row.setsumei_code,
+        *level_cells,
+        row.setsumei_amount or "",
+    )
+
+
+def _write_excel(rows: tuple[FlatRow, ...], dst_path: str) -> None:
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
 
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Budget"
+    max_level = _max_setsumei_level(rows)
+    headers = _excel_headers(max_level)
 
     header_font = Font(bold=True)
     header_fill = PatternFill(start_color="DAEEF3", end_color="DAEEF3", fill_type="solid")
-    for ci, h in enumerate(HEADERS, 1):
+    for ci, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=ci, value=h)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center")
 
     for ri, row in enumerate(rows, 2):
-        t = row_to_tuple(row)
+        t = _excel_row_tuple(row, max_level)
         for ci, val in enumerate(t, 1):
             ws.cell(row=ri, column=ci, value=val)
 

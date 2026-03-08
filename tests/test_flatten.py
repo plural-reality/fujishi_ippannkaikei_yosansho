@@ -43,7 +43,7 @@ SAMPLE_ZAIGEN = Zaigen(kokuken=100, chihousei=None, sonota=200, ippan=300)
 
 SAMPLE_SETSUMEI = (
     SetsumeiEntry("coded", "001", "給与費", 998),
-    SetsumeiEntry("text", None, "（定数外）", None, "事務補助 1人"),
+    SetsumeiEntry("text", None, "（定数外）", None),
 )
 
 SAMPLE_SETSU = SetsuRecord(
@@ -76,7 +76,7 @@ def _empty_row(**overrides) -> FlatRow:
         kokuken=None, chihousei=None, sonota=None, ippan=None,
         setsu_number=None, setsu_name="", setsu_amount=None,
         sub_item_name="", sub_item_amount=None,
-        setsumei_code="", setsumei_name="", setsumei_supplement="", setsumei_amount=None,
+        setsumei_code="", setsumei_level=None, setsumei_name="", setsumei_amount=None,
     )
     return FlatRow(**{**defaults, **overrides})
 
@@ -102,8 +102,8 @@ class TestFlattenSetsu:
         rows = flatten_setsu(SAMPLE_MOKU, SAMPLE_SETSU)
         coded_row = rows[1]
         assert coded_row.setsumei_code == "001"
+        assert coded_row.setsumei_level == 1
         assert coded_row.setsumei_name == "給与費"
-        assert coded_row.setsumei_supplement == ""
         assert coded_row.setsumei_amount == 998
 
     def test_empty_setsu_produces_one_row(self) -> None:
