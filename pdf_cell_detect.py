@@ -244,22 +244,19 @@ _BLUE = (0, 0, 1)
 _GREEN = (0, 0.6, 0)
 
 
-def render_overlay(
-    src_pdf_bytes: bytes,
+def draw_overlay_on_fitz_page(
+    fitz_page: fitz.Page,
     geom: PageGeometry,
     grid: Grid,
-    page_index: int = 0,
-) -> bytes:
+) -> None:
     """
-    Render an overlay on the source PDF:
+    Draw detection overlay on a single fitz page (mutates page in-place).
       - Red: original PDF vector lines
       - Blue dashed: text-row boundaries
       - Green: word bounding boxes
-    Returns the modified PDF as bytes.
-    """
-    doc = fitz.open(stream=src_pdf_bytes, filetype="pdf")
-    fitz_page = doc[page_index]
 
+    This is the reusable per-page drawing primitive.
+    """
     # Red: PDF vector lines
     for line in geom.lines:
         shape = fitz_page.new_shape()
@@ -267,7 +264,7 @@ def render_overlay(
         shape.finish(color=_RED, width=1.5)
         shape.commit()
 
-    # Blue dashed: row boundaries across each table region
+    # Blue dashed: row boundaries
     col_min = min(grid.col_boundaries) if grid.col_boundaries else 0
     col_max = max(grid.col_boundaries) if grid.col_boundaries else geom.width
     for y in grid.row_boundaries:
@@ -283,6 +280,16 @@ def render_overlay(
         shape.finish(color=_GREEN, width=0.3, fill=None)
         shape.commit()
 
+
+def render_overlay(
+    src_pdf_bytes: bytes,
+    geom: PageGeometry,
+    grid: Grid,
+    page_index: int = 0,
+) -> bytes:
+    """Single-page convenience: render overlay and return PDF bytes."""
+    doc = fitz.open(stream=src_pdf_bytes, filetype="pdf")
+    draw_overlay_on_fitz_page(doc[page_index], geom, grid)
     result = doc.tobytes()
     doc.close()
     return result
