@@ -62,7 +62,7 @@ class TestImmutability:
             kokuken=None, chihousei=None, sonota=None, ippan=None,
             setsu_number=None, setsu_name="", setsu_amount=None,
             sub_item_name="", sub_item_amount=None,
-            setsumei_code="", setsumei_name="", setsumei_amount=None,
+            setsumei_code="", setsumei_name="", setsumei_supplement="", setsumei_amount=None,
         )
         with pytest.raises(AttributeError):
             r.moku_name = "x"  # type: ignore[misc]

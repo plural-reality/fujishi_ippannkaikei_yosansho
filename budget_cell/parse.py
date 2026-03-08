@@ -74,6 +74,10 @@ def parse_setsu_text(text: str) -> tuple[int, str] | None:
 _AMOUNT_MARGIN = 50.0   # words within this distance of cell right edge → amount
 _CODE_MARGIN = 25.0     # words within this distance of cell left edge + 3-digit → code
 _LINE_Y_TOLERANCE = 1.2  # same logical line if y-center distance <= this value
+_INDENT_NOISE = 2.5
+_INDENT_STEP_DEFAULT = 7.0
+_INDENT_PREFIX = "  "
+_SUPPLEMENT_SEPARATOR = " / "
 _CODE_RE = re.compile(r"^\d{3}$")
 _AMOUNT_RE = re.compile(r"^[\d,△\-]+$")
 
@@ -164,8 +168,14 @@ def split_words_into_lines(words: Sequence[Word]) -> tuple[tuple[Word, ...], ...
 
 def _parse_setsumei_line(
     words: tuple[Word, ...], cell_x0: float, cell_x1: float,
-) -> tuple[SetsumeiEntry, bool]:
-    """Parse one logical line. bool indicates whether the line has right-edge amount."""
+) -> tuple[SetsumeiEntry, bool, float | None]:
+    """Parse one logical line.
+
+    Returns:
+      - entry
+      - has_amount (right-edge numeric token exists)
+      - left_x (line start x for indentation inference)
+    """
     amount_ws = tuple(w for w in words if _is_amount_word(w, cell_x1))
     code_ws = tuple(w for w in words if _is_code_word(w, cell_x0))
     name_ws = tuple(w for w in words if w not in amount_ws and w not in code_ws)
@@ -178,10 +188,19 @@ def _parse_setsumei_line(
         name=" ".join(w.text for w in name_ws),
         amount=amount,
     )
-    return (entry, bool(amount_ws))
+    left_x = (
+        code_ws[0].x0
+        if code_ws
+        else name_ws[0].x0
+        if name_ws
+        else words[0].x0
+        if words
+        else None
+    )
+    return (entry, bool(amount_ws), left_x)
 
 
-def parse_setsumei_cell_lines(cell: Cell) -> tuple[tuple[SetsumeiEntry, bool], ...]:
+def parse_setsumei_cell_lines(cell: Cell) -> tuple[tuple[SetsumeiEntry, bool, float | None], ...]:
     """Parse one setsumei cell into logical line entries with amount-anchor flag."""
     return tuple(
         _parse_setsumei_line(line_words, cell.x0, cell.x1)
@@ -189,30 +208,84 @@ def parse_setsumei_cell_lines(cell: Cell) -> tuple[tuple[SetsumeiEntry, bool], .
     )
 
 
-def _join_text(base: str, extra: str) -> str:
+def _join_with_separator(base: str, extra: str, separator: str) -> str:
     return (
         extra
         if not base
         else base
         if not extra
-        else f"{base} {extra}"
+        else f"{base}{separator}{extra}"
     )
+
+
+def _supplement_text(entry: SetsumeiEntry) -> str:
+    coded_prefix = f"{entry.code} " if entry.code else ""
+    return (coded_prefix + entry.name).strip()
 
 
 def _merge_supplement_line(base: SetsumeiEntry, supplement: SetsumeiEntry) -> SetsumeiEntry:
     """Attach a non-amount supplement line to a base entry."""
-    merged_code = base.code or supplement.code
     return replace(
         base,
-        kind="coded" if merged_code else "text",
-        code=merged_code,
-        name=_join_text(base.name, supplement.name),
+        supplement=_join_with_separator(
+            base.supplement,
+            _supplement_text(supplement),
+            _SUPPLEMENT_SEPARATOR,
+        ),
         amount=base.amount if base.amount is not None else supplement.amount,
     )
 
 
+def _indent_level(left_x: float | None, base_x: float, step: float) -> int:
+    if left_x is None:
+        return 0
+    dx = left_x - base_x
+    return (
+        0
+        if dx <= _INDENT_NOISE
+        else max(0, int(round(dx / step)))
+    )
+
+
+def _apply_indent(entry: SetsumeiEntry, level: int) -> SetsumeiEntry:
+    return (
+        entry
+        if level <= 0 or not entry.name
+        else replace(entry, name=f"{_INDENT_PREFIX * level}{entry.name}")
+    )
+
+
+def _resolve_indent_scale(
+    line_entries: Sequence[tuple[SetsumeiEntry, bool, float | None]],
+) -> tuple[float, float]:
+    amount_lefts = tuple(
+        left_x
+        for _, has_amount, left_x in line_entries
+        if has_amount and left_x is not None
+    )
+    all_lefts = tuple(
+        left_x
+        for _, _, left_x in line_entries
+        if left_x is not None
+    )
+    base = (
+        min(amount_lefts)
+        if amount_lefts
+        else min(all_lefts)
+        if all_lefts
+        else 0.0
+    )
+    deltas = tuple(sorted(
+        left_x - base
+        for left_x in amount_lefts
+        if left_x - base > _INDENT_NOISE
+    ))
+    step = deltas[0] if deltas else _INDENT_STEP_DEFAULT
+    return (base, step)
+
+
 def fold_setsumei_lines(
-    line_entries: Sequence[tuple[SetsumeiEntry, bool]],
+    line_entries: Sequence[tuple[SetsumeiEntry, bool, float | None]],
 ) -> tuple[SetsumeiEntry, ...]:
     """Fold line-level entries into logical setsumei entries.
 
@@ -221,13 +294,16 @@ def fold_setsumei_lines(
       - non-amount line: attaches to the previous entry as supplement
       - if there is no previous entry, keep it as a standalone entry
     """
+    base_x, indent_step = _resolve_indent_scale(line_entries)
+
     def step(
         acc: tuple[SetsumeiEntry, ...],
-        item: tuple[SetsumeiEntry, bool],
+        item: tuple[SetsumeiEntry, bool, float | None],
     ) -> tuple[SetsumeiEntry, ...]:
-        entry, has_amount = item
+        entry, has_amount, left_x = item
+        indented = _apply_indent(entry, _indent_level(left_x, base_x, indent_step))
         return (
-            (*acc, entry)
+            (*acc, indented)
             if has_amount or not acc
             else (*acc[:-1], _merge_supplement_line(acc[-1], entry))
         )

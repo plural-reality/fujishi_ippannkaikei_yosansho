@@ -227,7 +227,7 @@ class TestSetsumeiLineSplitAndFold:
         )
         entries = parse_setsumei_cells(cells)
         assert entries == (
-            SetsumeiEntry("coded", "001", "給与費 パートタイム会計年度任用職員", 998),
+            SetsumeiEntry("coded", "001", "給与費", 998, "パートタイム会計年度任用職員"),
         )
 
     def test_parse_setsumei_cells_no_base_keeps_text_row(self) -> None:
@@ -240,6 +240,26 @@ class TestSetsumeiLineSplitAndFold:
         )
         entries = parse_setsumei_cells(cells)
         assert entries == (SetsumeiEntry("text", None, "（定数外）", None),)
+
+    def test_parse_setsumei_cells_keeps_indent_for_child_amount_lines(self) -> None:
+        cell = Cell(
+            row=0, col=11, x0=0, y0=0, x1=100, y1=24,
+            text="002 親 1,510 001 子 1,510",
+            words=(
+                Word(x0=5, y0=2, x1=20, y1=8, text="002"),
+                Word(x0=25, y0=2, x1=40, y1=8, text="親"),
+                Word(x0=82, y0=2, x1=95, y1=8, text="1,510"),
+                Word(x0=12, y0=14, x1=27, y1=20, text="001"),
+                Word(x0=32, y0=14, x1=45, y1=20, text="子"),
+                Word(x0=82, y0=14, x1=95, y1=20, text="1,510"),
+            ),
+        )
+        entries = parse_setsumei_cells((cell,))
+        assert entries[0] == SetsumeiEntry("coded", "002", "親", 1510)
+        assert entries[1].code == "001"
+        assert entries[1].amount == 1510
+        assert entries[1].name.startswith("  ")
+        assert entries[1].name.strip() == "子"
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +466,8 @@ class TestBuildSetsuRecord:
         assert record.name == "共済費"
         assert record.amount == 127
         assert len(record.setsumei) == 1
-        assert record.setsumei[0].name == "（定数外） 事務補助 1人"
+        assert record.setsumei[0].name == "（定数外）"
+        assert record.setsumei[0].supplement == "事務補助 1人"
 
     def test_setsu_with_continuation(self) -> None:
         idx = build_cell_index(CONTINUATION_CELLS)

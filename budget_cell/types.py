@@ -90,6 +90,7 @@ class SetsumeiEntry:
     code: str | None
     name: str
     amount: int | None
+    supplement: str = ""
 
 
 @dataclass(frozen=True)
@@ -153,4 +154,5 @@ class FlatRow:
     sub_item_amount: int | None
     setsumei_code: str
     setsumei_name: str
+    setsumei_supplement: str
     setsumei_amount: int | None

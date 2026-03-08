@@ -66,7 +66,8 @@ PageHeader(kan_number: str, kan_name: str, kou_number: str, kou_name: str)
 ### 予算構造層（表の中身）
 
 ```
-SetsumeiEntry(kind: "coded"|"text", code: str|None, name: str, amount: int|None)
+SetsumeiEntry(kind: "coded"|"text", code: str|None, name: str,
+              amount: int|None, supplement: str)
 
 Zaigen(kokuken: int|None, chihousei: int|None, sonota: int|None, ippan: int|None)
 
@@ -223,7 +224,7 @@ Cell[] → CellIndex → classify_all_rows → group_rows_by_moku
 1. `split_words_into_lines` — `Word.y` でセル内の論理行に分割
 2. `_parse_setsumei_line` — 各行を `code/name/amount` に分解
 3. `fold_setsumei_lines` — 右端金額あり行をアンカーとしてエントリ開始し、
-   金額なし行は直前エントリへ補足として連結
+   金額なし行は直前エントリの `supplement` に連結（`name` とは分離）
 
 これにより、`merge.py` で右表行が統合されても説明の論理行を復元できる。
 
@@ -260,12 +261,12 @@ Cell[] → CellIndex → classify_all_rows → group_rows_by_moku
 3. **label_section** (map) — 款/項を全行に構造的に付与
    - セクション単位で処理されるため ffill 不要。全行に同一の款/項をスタンプ。
 
-**出力ヘッダ** (18列):
+**出力ヘッダ** (19列):
 ```
 款, 項, 目, 本年度予算額, 前年度予算額, 比較,
 国県支出金, 地方債, その他, 一般財源,
 節番号, 節名, 節金額, 小区分, 小区分金額,
-事業コード, 説明, 説明金額
+事業コード, 説明, 説明補足, 説明金額
 ```
 
 ### overlay.py — IO境界（fitz/pymupdf）
