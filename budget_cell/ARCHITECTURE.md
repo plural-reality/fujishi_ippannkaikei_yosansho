@@ -1,6 +1,6 @@
 # Architecture — budget_cell
 
-富士市一般会計予算書 PDF → 構造化 Excel 変換パイプライン。
+富士市一般会計予算書 PDF → NDJSON(FlatRow) → 構造化 Excel 変換パイプライン。
 
 ## 設計原則
 
@@ -16,6 +16,7 @@
 ```
 types.py ← SSOT（全ドメイン型、依存なし）
   ↑
+  ├── pipeline.py   ← 純粋合成: PDF path → SectionCells[] → SectionRows[]
   ├── extract.py    ← IO境界: pdfplumber
   ├── grid.py       ← 純粋: 幾何構造 → Grid
   ├── cells.py      ← 純粋: 幾何構造 × Grid → Cell[]
@@ -24,10 +25,16 @@ types.py ← SSOT（全ドメイン型、依存なし）
   ├── section.py    ← 純粋: Cell[] → (Header, Cell[])[]（項境界分割）
   ├── parse.py      ← 純粋: Cell[] → PageBudget
   ├── flatten.py    ← 純粋: PageBudget → FlatRow[]
+  ├── row_stream.py ← FlatRow ↔ NDJSON adapter
+  ├── excel_io.py   ← FlatRow ↔ Excel projection（wide/long）
   └── overlay.py    ← IO境界: fitz (pymupdf)
 
 cli/
-  ├── to_excel.py   ← パイプライン合成: PDF → Excel
+  ├── excel_to_rows.py ← Excel source → NDJSON(FlatRow) stdout
+  ├── pdf_to_rows.py   ← パイプライン合成: PDF path → NDJSON(FlatRow) stdout
+  ├── rows_ffill.py    ← 中間変換: NDJSON stdin → NDJSON stdout（fields指定可能）
+  ├── rows_to_excel.py ← 出力境界: NDJSON stdin → Excel sink（wide/long projection）
+  ├── to_excel.py      ← 互換ラッパ: pdf_to_rows | rows_ffill | rows_to_excel を同一プロセスで合成
   └── overlay.py    ← パイプライン合成: PDF → overlay PDF
 ```
 
@@ -67,7 +74,7 @@ PageHeader(kan_number: str, kan_name: str, kou_number: str, kou_name: str)
 
 ```
 SetsumeiEntry(kind: "coded"|"text", code: str|None, name: str,
-              amount: int|None, supplement: str)
+              amount: int|None, level: int)
 
 Zaigen(kokuken: int|None, chihousei: int|None, sonota: int|None, ippan: int|None)
 
@@ -91,47 +98,43 @@ FlatRow(
   kokuken, chihousei, sonota, ippan,                     ← 財源内訳
   setsu_number, setsu_name, setsu_amount,                ← 節
   sub_item_name, sub_item_amount,                        ← 小区分
-  setsumei_code, setsumei_name, setsumei_amount          ← 説明
+  setsumei_code, setsumei_level, setsumei_name, setsumei_amount  ← 説明
 )
 ```
 
 ---
 
-## パイプライン詳細（to_excel.py）
+## パイプライン詳細（Unix Pipe / 3段ストリーム）
 
 ```
-PDF (bytes)
+PDF path
  │
- ▼ extract.py: extract_all_geometries
-tuple[PageGeometry, ...]                           全ページの幾何情報
+ ▼ budget_cell.cli.pdf_to_rows
+ │   ├─ extract.py: extract_all_geometries
+ │   ├─ grid.py: extract_expenditure_pages → build_grid
+ │   ├─ header.py: parse_page_header
+ │   ├─ cells.py: assign_words_to_cells → merge.py: merge_rows → section.py: split_page_sections
+ │   ├─ parse.py: parse_page_budget
+ │   ├─ flatten.py: flatten_all_pages
+ │   └─ flatten.py: label_section
  │
- ▼ grid.py: extract_expenditure_pages
-tuple[PageGeometry, ...]                           歳出セクションのみ（扉ページ以降の表ページ）
+stdout: NDJSON(FlatRow)                            抽出結果（フォーマット非依存）
  │
- ▼ grid.py: build_grid  ×  header.py: parse_page_header
-tuple[(PageGeometry, Grid, PageHeader|None), ...]  Grid構築 + 表上ヘッダ抽出（並行）
+ ▼ budget_cell.cli.rows_ffill --fields ...
+stdin: NDJSON(FlatRow)
+ │   └─ flatten.py: sectioned_ffill / ffill
+stdout: NDJSON(FlatRow)                            中間変換（前方充填のみ）
  │
- ▼ filter: header is not None
-tuple[(PageHeader, PageGeometry, Grid), ...]       ヘッダのあるデータページのみ
- │
- ▼ cells.py: assign_words_to_cells → merge.py: merge_rows → section.py: split_page_sections
-tuple[(PageHeader, tuple[Cell,...]), ...]           セグメント（ページ内の項境界で分割済み）
- │
- ▼ itertools.groupby(key=(kan_number, kan_name, kou_number, kou_name))
-dict[(款,項) → tuple[tuple[Cell,...], ...]]         連続セグメントを(款,項)でグループ化
- │
- ▼ 各セクション独立処理: _process_section
- │   ├─ parse.py: parse_page_budget     Cell[] → PageBudget（目/節/説明の構造化）
- │   ├─ flatten.py: flatten_all_pages   PageBudget[] → FlatRow[]（木構造→フラット）
- │   ├─ flatten.py: ffill               FlatRow[] → FlatRow[]（空欄を上から前方充填）
- │   └─ flatten.py: label_section       FlatRow[] → FlatRow[]（款/項を全行に付与）
- │
- ▼ concat all sections
-tuple[FlatRow, ...]                                全行
- │
- ▼ _write_excel (openpyxl)
-Excel (.xlsx)
+ ▼ budget_cell.cli.rows_to_excel --layout wide|long
+stdin: NDJSON(FlatRow)
+ │   ├─ projection: wide | long
+ │   └─ openpyxl sink
+Excel (.xlsx)                                      出力形式変換
 ```
+
+- `rows_ffill` は **中間変換専用**（NDJSON→NDJSON）で、出力形式変換を持たない。
+- `wide/long` は `rows_to_excel` の **投影** であり、PDF抽出・構造化ロジックとは非結合。
+- 既存Excelを起点にする場合は `excel_to_rows | rows_ffill | rows_to_excel` で同一パイプを再利用できる。
 
 ### 各ステップの変換
 
@@ -146,9 +149,11 @@ Excel (.xlsx)
 | 項境界分割 | `PageHeader × tuple[Cell,...]` | `tuple[(PageHeader,tuple[Cell,...]),...]` | section | 純粋 |
 | 予算解析 | `tuple[Cell,...]` | `PageBudget` | parse | 純粋 |
 | フラット化 | `tuple[PageBudget,...]` | `tuple[FlatRow,...]` | flatten | 純粋 |
-| 前方充填 | `tuple[FlatRow,...] × fields` | `tuple[FlatRow,...]` | flatten | 純粋 |
 | 款項ラベル | `PageHeader × tuple[FlatRow,...]` | `tuple[FlatRow,...]` | flatten | 純粋 |
-| Excel出力 | `tuple[FlatRow,...]` | `.xlsx file` | cli/to_excel | IO |
+| Excel読取（任意） | `.xlsx file` | `NDJSON stream` | cli/excel_to_rows (`excel_io`) | IO |
+| NDJSON出力 | `tuple[FlatRow,...]` | `NDJSON stream` | cli/pdf_to_rows | IO |
+| 前方充填（任意） | `NDJSON(stdin) × fields` | `NDJSON(stdout)` | cli/rows_ffill (`flatten.sectioned_ffill`) | IO境界 + 純粋 |
+| Excel投影/出力 | `NDJSON(stdin) × layout(wide\|long)` | `.xlsx file` | cli/rows_to_excel | IO |
 
 ---
 
@@ -223,8 +228,8 @@ Cell[] → CellIndex → classify_all_rows → group_rows_by_moku
 **説明セル解析**: Word 座標ベースの 3 段パイプライン。
 1. `split_words_into_lines` — `Word.y` でセル内の論理行に分割
 2. `_parse_setsumei_line` — 各行を `code/name/amount` に分解
-3. `fold_setsumei_lines` — 右端金額あり行をアンカーとしてエントリ開始し、
-   金額なし行は直前エントリの `supplement` に連結（`name` とは分離）
+3. `fold_setsumei_lines` — `code + name` ラベル位置を正規化して `level` を付与。
+   金額あり/なしは同一モデル（`amount: int|None`）で扱う。
 
 これにより、`merge.py` で右表行が統合されても説明の論理行を復元できる。
 
@@ -257,17 +262,22 @@ Cell[] → CellIndex → classify_all_rows → group_rows_by_moku
    - `SETSU_FIELDS`: setsu_number, setsu_name, setsu_amount
    - `FFILL_FIELDS = MOKU_FIELDS + SETSU_FIELDS`
    - 汎用的な scanl。ドメイン知識なし。
+   - CLI では `rows_ffill` がこの変換のみを担当し、`rows_to_excel` から分離。
 
 3. **label_section** (map) — 款/項を全行に構造的に付与
    - セクション単位で処理されるため ffill 不要。全行に同一の款/項をスタンプ。
 
-**出力ヘッダ** (19列):
+**内部フラットヘッダ** (18列):
 ```
 款, 項, 目, 本年度予算額, 前年度予算額, 比較,
 国県支出金, 地方債, その他, 一般財源,
 節番号, 節名, 節金額, 小区分, 小区分金額,
-事業コード, 説明, 説明補足, 説明金額
+事業コード, 説明, 説明金額
 ```
+
+**rows_to_excel の投影（抽出ロジックと非結合）**:
+- `wide`: 固定部 `... 事業コード` + 可変部 `説明L1..LN` + `説明金額`
+- `long`: 固定部 `... 事業コード` + `説明レベル` + `説明` + `説明金額`
 
 ### overlay.py — IO境界（fitz/pymupdf）
 
@@ -283,7 +293,7 @@ Cell[] → CellIndex → classify_all_rows → group_rows_by_moku
 ### なぜセクション単位か
 
 - 款/項はページヘッダに記載 → 表データ外
-- ffill で伝播すると項境界でリークする
+- `rows_ffill` の ffill で伝播すると項境界でリークする
 - セクション単位で独立処理 → label_section で構造的に付与 → リーク不可能
 
 ### ページ内の項遷移
@@ -306,6 +316,7 @@ Cell[] → CellIndex → classify_all_rows → group_rows_by_moku
 budget_cell/
 ├── __init__.py        エクスポート（全ドメイン型）
 ├── types.py           ドメイン型定義（SSOT）
+├── pipeline.py        PDF path → section/unit transforms（純粋合成）
 ├── extract.py         IO: pdfplumber → PageGeometry
 ├── grid.py            PageGeometry → Grid, 歳出フィルタ
 ├── cells.py           PageGeometry × Grid → Cell[]
@@ -314,13 +325,21 @@ budget_cell/
 ├── section.py         (PageHeader, Cell[]) → (PageHeader, Cell[])[]（項分割）
 ├── parse.py           Cell[] → PageBudget
 ├── flatten.py         PageBudget → FlatRow[]
+├── row_stream.py      FlatRow ↔ NDJSON adapter
+├── excel_io.py        FlatRow ↔ Excel projection（wide/long）
 ├── overlay.py         IO: Grid → overlay PDF
 └── cli/
-    ├── to_excel.py    PDF → Excel パイプライン
+    ├── excel_to_rows.py  Excel source → NDJSON(FlatRow) stdout
+    ├── pdf_to_rows.py   PDF path → NDJSON(FlatRow) stdout
+    ├── rows_ffill.py    NDJSON stdin → NDJSON stdout（前方充填）
+    ├── rows_to_excel.py NDJSON stdin → Excel sink（wide/long）
+    ├── to_excel.py      互換ラッパ（上記3段を同一プロセスで合成）
     └── overlay.py     PDF → overlay PDF パイプライン
 
 tests/
 ├── test_types.py      型の不変性テスト
 ├── test_flatten.py    flatten / ffill / label_section テスト
+├── test_row_stream.py NDJSON adapter テスト
+├── test_excel_io.py   Excel projection テスト
 └── test_header.py     ヘッダ抽出テスト
 ```

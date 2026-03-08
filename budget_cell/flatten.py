@@ -12,7 +12,8 @@ Depends only on types. No IO, no PDF knowledge.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Sequence
+from itertools import groupby
+from typing import Callable, Hashable, Sequence
 
 from budget_cell.types import (
     FlatRow,
@@ -242,6 +243,19 @@ def ffill(
     for row in rows:
         result = step(result, row)
     return result[1]
+
+
+def sectioned_ffill(
+    rows: Sequence[FlatRow],
+    fields: tuple[str, ...],
+    key_fn: Callable[[FlatRow], Hashable],
+) -> tuple[FlatRow, ...]:
+    """Forward-fill independently per consecutive section key."""
+    return tuple(
+        row
+        for _, group in groupby(rows, key=key_fn)
+        for row in ffill(tuple(group), fields)
+    )
 
 
 # ---------------------------------------------------------------------------

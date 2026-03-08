@@ -31,6 +31,7 @@ from budget_cell.flatten import (
     flatten_setsu,
     label_section,
     row_to_tuple,
+    sectioned_ffill,
     to_table,
 )
 
@@ -240,6 +241,16 @@ class TestSectionIsolation:
         assert labeled_a[0].moku_name == "目1"
         assert labeled_b[0].kan_name == "B款"
         assert labeled_b[0].moku_name == ""  # no leak from section A
+
+    def test_sectioned_ffill_by_key(self) -> None:
+        rows = (
+            _empty_row(kan_name="A款", kou_name="A項", moku_name="目A", honendo=100),
+            _empty_row(kan_name="A款", kou_name="A項"),
+            _empty_row(kan_name="B款", kou_name="B項"),
+        )
+        filled = sectioned_ffill(rows, MOKU_FIELDS, key_fn=lambda r: (r.kan_name, r.kou_name))
+        assert filled[1].moku_name == "目A"
+        assert filled[2].moku_name == ""
 
 
 # ---------------------------------------------------------------------------
