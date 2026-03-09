@@ -353,6 +353,38 @@ class TestClassifyRow:
         assert kinds[2] == "setsu"
         assert kinds[3] == "setsumei"
 
+    def test_kou_header_not_moku(self) -> None:
+        """'N項' pattern should be classified as header, not moku."""
+        cells = (
+            Cell(row=0, col=0, x0=0, y0=0, x1=10, y1=10, text="１項", words=()),
+            Cell(row=1, col=0, x0=0, y0=10, x1=10, y1=20, text="２項", words=()),
+            Cell(row=2, col=0, x0=0, y0=20, x1=10, y1=30, text="1 議会費", words=()),
+        )
+        idx = build_cell_index(cells)
+        # 「１項」「２項」should be header (section header), not moku
+        assert classify_row(idx, 0, frozenset()) == "header"
+        assert classify_row(idx, 1, frozenset()) == "header"
+        # Normal moku should still be classified as moku
+        assert classify_row(idx, 2, frozenset()) == "moku"
+
+    def test_kan_header_not_moku(self) -> None:
+        """'N款' pattern should be classified as header, not moku."""
+        cells = (
+            Cell(row=0, col=0, x0=0, y0=0, x1=10, y1=10, text="１款", words=()),
+            Cell(row=1, col=0, x0=0, y0=10, x1=10, y1=20, text="3款", words=()),
+        )
+        idx = build_cell_index(cells)
+        assert classify_row(idx, 0, frozenset()) == "header"
+        assert classify_row(idx, 1, frozenset()) == "header"
+
+    def test_kou_header_with_trailing_space(self) -> None:
+        """'N項 ' with trailing whitespace should still be classified as header."""
+        cells = (
+            Cell(row=0, col=0, x0=0, y0=0, x1=10, y1=10, text="２項  ", words=()),
+        )
+        idx = build_cell_index(cells)
+        assert classify_row(idx, 0, frozenset()) == "header"
+
 
 # ---------------------------------------------------------------------------
 # Continuation detection

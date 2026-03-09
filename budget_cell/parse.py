@@ -394,12 +394,26 @@ def _is_continuation(idx: CellIndex, row: int) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Section header detection (項/款 transition rows, not moku)
+# ---------------------------------------------------------------------------
+
+_KOU_KAN_HEADER_RE = re.compile(r"^[０-９\d]+[項款]$")
+
+
+def _is_kou_or_kan_header(text: str) -> bool:
+    """True if text matches 'N項' or 'N款' pattern (section header, not moku)."""
+    return bool(_KOU_KAN_HEADER_RE.match(text.strip()))
+
+
+# ---------------------------------------------------------------------------
 # Row classification (pure)
 # ---------------------------------------------------------------------------
 
 def classify_row(idx: CellIndex, row: int, headers: frozenset[int]) -> str:
+    moku_text = text_at(idx, row, COL_MOKU) or ""
     return (
         "header" if row in headers else
+        "header" if _is_kou_or_kan_header(moku_text) else
         "moku" if _has_text(idx, row, COL_MOKU) else
         "setsu" if _is_setsu(idx, row) else
         "sub_item" if _is_sub_item(idx, row) else
