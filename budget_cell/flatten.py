@@ -1,16 +1,19 @@
 """
 Pure flatten: PageBudget → FlatRow[].
 
-Three orthogonal transforms:
+Four orthogonal transforms:
   1. flatten     — structural: PageBudget tree → flat rows (concatMap)
   2. stamp_page  — per-page: attach PageHeader (kan/kou) to first row
   3. ffill / sectioned_ffill — tabular: forward-fill empty cells (scanl)
+  4. normalize   — text normalization: fullwidth→halfwidth, strip spaces
 
 Depends only on types. No IO, no PDF knowledge.
 """
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import replace
 from itertools import groupby
 from typing import Callable, Hashable, Sequence
@@ -48,6 +51,15 @@ SETSU_FIELDS: tuple[str, ...] = (
 )
 
 FFILL_FIELDS: tuple[str, ...] = (*MOKU_FIELDS, *SETSU_FIELDS)
+
+NORMALIZE_TEXT_FIELDS: tuple[str, ...] = (
+    "kan_name",
+    "kou_name",
+    "moku_name",
+    "setsu_name",
+    "setsumei_name",
+    "sub_item_name",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +268,44 @@ def sectioned_ffill(
         for _, group in groupby(rows, key=key_fn)
         for row in ffill(tuple(group), fields)
     )
+
+
+# ---------------------------------------------------------------------------
+# 4. Text normalization
+# ---------------------------------------------------------------------------
+
+_SPACE_RE = re.compile(r"[\s\u3000]+")
+
+
+def _normalize_value(val: str) -> str:
+    """Normalize a single text value.
+
+    1. NFKC normalization (fullwidth digits → halfwidth, etc.)
+    2. Remove all whitespace (leading, trailing, and internal)
+    """
+    nfkc = unicodedata.normalize("NFKC", val)
+    return _SPACE_RE.sub("", nfkc)
+
+
+def normalize_text(
+    rows: Sequence[FlatRow],
+    fields: tuple[str, ...] = NORMALIZE_TEXT_FIELDS,
+) -> tuple[FlatRow, ...]:
+    """Normalize text fields: NFKC + strip all spaces.
+
+    Pure map — no cross-row logic, each row is independently transformed.
+    """
+    def normalize_row(row: FlatRow) -> FlatRow:
+        replacements = {}
+        for f in fields:
+            val = getattr(row, f)
+            if isinstance(val, str) and val:
+                normalized = _normalize_value(val)
+                if normalized != val:
+                    replacements[f] = normalized
+        return replace(row, **replacements) if replacements else row
+
+    return tuple(normalize_row(r) for r in rows)
 
 
 # ---------------------------------------------------------------------------

@@ -24,12 +24,14 @@ from budget_cell.parse import parse_page_budget
 from budget_cell.flatten import (
     HEADERS,
     MOKU_FIELDS,
+    NORMALIZE_TEXT_FIELDS,
     ffill,
     flatten_moku,
     flatten_orphans,
     flatten_page_budget,
     flatten_setsu,
     label_section,
+    normalize_text,
     row_to_tuple,
     sectioned_ffill,
     to_table,
@@ -219,6 +221,66 @@ class TestFfill:
         empty = _empty_row()
         filled = ffill((base, empty, empty, empty), MOKU_FIELDS)
         assert all(r.moku_name == "目B" for r in filled)
+
+
+# ---------------------------------------------------------------------------
+# normalize_text
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeText:
+    def test_fullwidth_digits_to_halfwidth(self) -> None:
+        """NFKC converts fullwidth digits to halfwidth."""
+        row = _empty_row(moku_name="1 議会費", setsumei_name="一般職 ３２人")
+        normalized = normalize_text((row,), NORMALIZE_TEXT_FIELDS)
+        assert normalized[0].moku_name == "1議会費"
+        assert normalized[0].setsumei_name == "一般職32人"
+
+    def test_removes_internal_spaces(self) -> None:
+        """All whitespace (leading, trailing, internal) is removed."""
+        row = _empty_row(moku_name="1 障害者自立 支援費")
+        normalized = normalize_text((row,), NORMALIZE_TEXT_FIELDS)
+        assert normalized[0].moku_name == "1障害者自立支援費"
+
+    def test_removes_fullwidth_space(self) -> None:
+        """Fullwidth space (U+3000) is also removed."""
+        row = _empty_row(setsu_name="報酬　手当")
+        normalized = normalize_text((row,), NORMALIZE_TEXT_FIELDS)
+        assert normalized[0].setsu_name == "報酬手当"
+
+    def test_preserves_non_text_fields(self) -> None:
+        """Non-text fields are not modified."""
+        row = _empty_row(moku_name="1 議会費", honendo=12345, zenendo=67890)
+        normalized = normalize_text((row,), NORMALIZE_TEXT_FIELDS)
+        assert normalized[0].honendo == 12345
+        assert normalized[0].zenendo == 67890
+
+    def test_custom_fields(self) -> None:
+        """Only specified fields are normalized."""
+        row = _empty_row(moku_name="1 議会費", setsu_name="報酬　手当")
+        normalized = normalize_text((row,), ("moku_name",))
+        assert normalized[0].moku_name == "1議会費"
+        assert normalized[0].setsu_name == "報酬　手当"  # not normalized
+
+    def test_empty_input(self) -> None:
+        assert normalize_text((), NORMALIZE_TEXT_FIELDS) == ()
+
+    def test_empty_string_unchanged(self) -> None:
+        row = _empty_row(moku_name="")
+        normalized = normalize_text((row,), NORMALIZE_TEXT_FIELDS)
+        assert normalized[0].moku_name == ""
+
+    def test_no_change_returns_same_row(self) -> None:
+        """If no normalization needed, the original row object is returned."""
+        row = _empty_row(moku_name="議会費")
+        normalized = normalize_text((row,), NORMALIZE_TEXT_FIELDS)
+        assert normalized[0] is row
+
+    def test_mixed_fullwidth_halfwidth(self) -> None:
+        """Mixed fullwidth/halfwidth is unified."""
+        row = _empty_row(moku_name="１２３abc")
+        normalized = normalize_text((row,), NORMALIZE_TEXT_FIELDS)
+        assert normalized[0].moku_name == "123abc"
 
 
 # ---------------------------------------------------------------------------
