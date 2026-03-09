@@ -11,6 +11,7 @@ import argparse
 import sys
 
 from budget_cell.excel_io import read_rows_from_excel_path
+from budget_cell.matchers import MATCHERS
 from budget_cell.trend import load_year_excel_nodes, write_trend_excel
 
 
@@ -45,6 +46,12 @@ def main() -> None:
         default=200,
         help="top N rows for short sheets (default: 200)",
     )
+    parser.add_argument(
+        "--matcher",
+        choices=tuple(sorted(MATCHERS.keys())),
+        default="loose",
+        help="matching strategy for cross-year key alignment (default: loose)",
+    )
     parser.add_argument("dst", help="output xlsx path")
     args = parser.parse_args(sys.argv[1:])
     year_to_path = _collect_year_inputs(tuple(args.input))
@@ -52,7 +59,12 @@ def main() -> None:
         raise SystemExit("need at least 2 --input YEAR=PATH values")
 
     nodes = load_year_excel_nodes(year_to_path, read_rows_from_excel_path)
-    write_trend_excel(args.dst, nodes, top_n=args.top_n)
+    write_trend_excel(
+        args.dst,
+        nodes,
+        top_n=args.top_n,
+        match_id_fn=MATCHERS[args.matcher],
+    )
     print(f"Wrote trend workbook: {args.dst}")
 
 

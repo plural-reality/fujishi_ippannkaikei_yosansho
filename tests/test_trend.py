@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from budget_cell.trend import aggregate_trends, rows_to_trend_nodes
+from budget_cell.matchers import trend_key_match_id_loose
+from budget_cell.trend import aggregate_trends, rows_to_trend_nodes, trend_key_match_id_strict
 from budget_cell.types import FlatRow
 
 
@@ -50,3 +51,64 @@ def test_aggregate_trends_diff_and_status() -> None:
     assert row.year_amounts == (100, 130)
     assert row.diff == 30
     assert row.status == "増額"
+
+
+def test_aggregate_trends_strict_keeps_notational_variants_separate() -> None:
+    r7 = rows_to_trend_nodes(
+        "R7",
+        (
+            _row(
+                moku_name="１ 一般管理費",
+                setsumei_name="給与 費",
+                setsumei_amount=100,
+            ),
+        ),
+    )
+    r8 = rows_to_trend_nodes(
+        "R8",
+        (
+            _row(
+                moku_name="1一般管理費",
+                setsumei_name="給与費",
+                setsumei_amount=130,
+            ),
+        ),
+    )
+    years, rows = aggregate_trends(
+        (*r7, *r8),
+        match_id_fn=trend_key_match_id_strict,
+    )
+    assert years == ("R7", "R8")
+    assert len(rows) == 2
+    assert {row.year_amounts for row in rows} == {(100, 0), (0, 130)}
+
+
+def test_aggregate_trends_loose_merges_notational_variants() -> None:
+    r7 = rows_to_trend_nodes(
+        "R7",
+        (
+            _row(
+                moku_name="１ 一般管理費",
+                setsumei_name="給与 費",
+                setsumei_amount=100,
+            ),
+        ),
+    )
+    r8 = rows_to_trend_nodes(
+        "R8",
+        (
+            _row(
+                moku_name="1一般管理費",
+                setsumei_name="給与費",
+                setsumei_amount=130,
+            ),
+        ),
+    )
+    years, rows = aggregate_trends(
+        (*r7, *r8),
+        match_id_fn=trend_key_match_id_loose,
+    )
+    assert years == ("R7", "R8")
+    assert len(rows) == 1
+    assert rows[0].year_amounts == (100, 130)
+    assert rows[0].diff == 30

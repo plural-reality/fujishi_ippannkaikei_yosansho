@@ -6,12 +6,8 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Callable
 
-from budget_cell.trend import TrendKey
-
-
-MatchIdFn = Callable[[TrendKey], str]
+from budget_cell.trend import MatchIdFn, TrendKey, trend_key_match_id_strict
 
 _SPACE_RE = re.compile(r"\s+")
 _PUNCT_RE = re.compile(r"[・･/／\\,，、\-−ー―()（）「」『』【】［］\[\]：:;；]")
@@ -27,10 +23,6 @@ def _normalize_token(value: str) -> str:
     no_space = _SPACE_RE.sub("", normalized)
     no_punct = _PUNCT_RE.sub("", no_space)
     return no_punct.translate(_VARIANT_MAP)
-
-
-def trend_key_match_id_strict(key: TrendKey) -> str:
-    return "|".join((key.kan_name, key.kou_name, key.moku_name, *key.path_levels))
 
 
 def trend_key_match_id_loose(key: TrendKey) -> str:

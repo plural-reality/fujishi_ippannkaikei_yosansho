@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from budget_cell.types import FlatRow
 
@@ -42,6 +42,9 @@ class TrendRow:
     diff: int
     ratio: float | None
     status: str
+
+
+MatchIdFn = Callable[[TrendKey], str]
 
 
 def _year_sort_key(value: str) -> tuple[int, str]:
@@ -139,25 +142,56 @@ def _ratio(base: int, diff: int) -> float | None:
     return None if base == 0 else diff / base
 
 
+def trend_key_match_id_strict(key: TrendKey) -> str:
+    return "|".join((key.kan_name, key.kou_name, key.moku_name, *key.path_levels))
+
+
+def _trend_key_sort_fields(key: TrendKey) -> tuple[str, str, str, tuple[str, ...]]:
+    return (
+        key.kan_name,
+        key.kou_name,
+        key.moku_name,
+        key.path_levels,
+    )
+
+
+def _representative_key(variants: Mapping[TrendKey, int]) -> TrendKey:
+    ranked = tuple(
+        sorted(
+            variants.items(),
+            key=lambda item: (-item[1], _trend_key_sort_fields(item[0])),
+        )
+    )
+    return ranked[0][0]
+
+
 def aggregate_trends(
     nodes: Sequence[TrendNode],
+    match_id_fn: MatchIdFn = trend_key_match_id_strict,
 ) -> tuple[tuple[str, ...], tuple[TrendRow, ...]]:
     years = tuple(sorted({node.year for node in nodes}, key=_year_sort_key))
-    key_year_sum: dict[tuple[TrendKey, str], int] = {}
+    key_year_sum: dict[tuple[str, str], int] = {}
+    key_variants: dict[str, dict[TrendKey, int]] = {}
     for node in nodes:
-        index = (node.key, node.year)
+        match_id = match_id_fn(node.key)
+        index = (match_id, node.year)
         key_year_sum[index] = key_year_sum.get(index, 0) + node.amount
+        variants = key_variants.setdefault(match_id, {})
+        variants[node.key] = variants.get(node.key, 0) + 1
 
-    keys = tuple(
+    representative_keys = {
+        match_id: _representative_key(variants)
+        for match_id, variants in key_variants.items()
+    }
+    match_ids = tuple(
         sorted(
-            {key for key, _ in key_year_sum.keys()},
-            key=lambda key: (
-                key.kan_name,
-                key.kou_name,
-                key.moku_name,
-                key.path_levels,
-            ),
+            representative_keys.keys(),
+            key=lambda match_id: _trend_key_sort_fields(representative_keys[match_id]),
         )
+    )
+    keys = tuple(
+        representative_keys[match_id]
+        for match_id in match_ids
     )
     rows = tuple(
         (
@@ -168,8 +202,8 @@ def aggregate_trends(
                 ratio=_ratio(amounts[0], amounts[-1] - amounts[0]),
                 status=_status(amounts[0], amounts[-1]),
             )
-        )(tuple(key_year_sum.get((key, year), 0) for year in years))
-        for key in keys
+        )(tuple(key_year_sum.get((match_id, year), 0) for year in years))
+        for key, match_id in zip(keys, match_ids)
     )
     ranked = tuple(
         sorted(
@@ -215,11 +249,12 @@ def write_trend_excel(
     dst_path: str,
     nodes: Sequence[TrendNode],
     top_n: int = 200,
+    match_id_fn: MatchIdFn = trend_key_match_id_strict,
 ) -> None:
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
 
-    years, rows = aggregate_trends(nodes)
+    years, rows = aggregate_trends(nodes, match_id_fn=match_id_fn)
     depth = _max_path_depth(rows)
     headers = (*_base_headers(depth), *years, "増減額", "増減率", "状態", "増減額順位")
 
