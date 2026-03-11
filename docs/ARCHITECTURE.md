@@ -106,8 +106,27 @@ FlatRow(
 
 ## パイプライン詳細（Unix Pipe / 3段ストリーム）
 
+### Source Normalization
+
+抽出本線の前に、入力 PDF を読み取りやすい形へ正規化する任意ステージを置ける。
+`make_spread` はこの層に属し、ドメイン抽出ではなく **source PDF -> normalized PDF** の変換だけを担当する。
+
 ```
-PDF path
+raw PDF
+ │
+ ├─ optional: budget_cell.cli.make_spread
+ │              └─ 単ページ列 → 見開き PDF
+ │
+ ▼ normalized PDF
+```
+
+R6 はこの前処理が必要なケースで、正準 recipe は
+`nix run .#make-spread -- inputs/r6-budget.pdf result/r6-spread.pdf --head-single-pages 1`
+である。1ページ目だけ単独保持し、2ページ目以降を 2-up 化する。
+この結果を回帰 fixture として固定したものが `tests/fixtures/r6/input/budget-spread.pdf`。
+
+```
+normalized PDF path
  │
  ▼ budget_cell.cli.pdf_to_rows
  │   ├─ extract.py: extract_all_geometries
@@ -135,11 +154,14 @@ Excel (.xlsx)                                      出力形式変換
 - `rows_ffill` は **中間変換専用**（NDJSON→NDJSON）で、出力形式変換を持たない。
 - `wide/long` は `rows_to_excel` の **投影** であり、PDF抽出・構造化ロジックとは非結合。
 - 既存Excelを起点にする場合は `excel_to_rows | rows_ffill | rows_to_excel` で同一パイプを再利用できる。
+- `make_spread` は `pdf_to_rows` の内部ではなく、その前段の **source normalization** に置く。
+- したがって pipeline 上の責務は `raw PDF -> normalized PDF -> NDJSON -> Excel` で分離される。
 
 ### 各ステップの変換
 
 | ステップ | 入力型 | 出力型 | モジュール | 性質 |
 |---|---|---|---|---|
+| Source正規化（任意） | `raw PDF path` | `normalized PDF path` | cli/make_spread (`spread`) | IO |
 | PDF読取 | `str (path)` | `tuple[PageGeometry,...]` | extract | IO |
 | 歳出フィルタ | `tuple[PageGeometry,...]` | `tuple[PageGeometry,...]` | grid | 純粋 |
 | Grid構築 | `PageGeometry` | `Grid` | grid | 純粋 |
