@@ -13,6 +13,7 @@ from typing import Callable, Sequence
 from budget_cell.cells import assign_words_to_cells
 from budget_cell.extract import extract_all_geometries
 from budget_cell.flatten import flatten_all_pages, ffill, label_section
+from budget_cell.geometry_normalize import normalize_page_geometries
 from budget_cell.grid import build_grid, extract_expenditure_pages
 from budget_cell.header import parse_page_header
 from budget_cell.merge import merge_rows
@@ -35,7 +36,7 @@ def collect_section_cells(
     logger: Logger | None = None,
 ) -> tuple[SectionCells, ...]:
     _log(logger, f"Extracting geometries from {src_path}...")
-    all_geoms = extract_all_geometries(src_path)
+    all_geoms = normalize_page_geometries(extract_all_geometries(src_path))
     _log(logger, f"  {len(all_geoms)} pages total")
 
     geoms = extract_expenditure_pages(all_geoms)

@@ -20,6 +20,7 @@ class TrendKey:
     kan_name: str
     kou_name: str
     moku_name: str
+    node_kind: str
     path_levels: tuple[str, ...]
 
 
@@ -29,9 +30,10 @@ class TrendNode:
     key: TrendKey
     setsu_number: int | None
     setsu_name: str
+    sub_item_name: str
     setsumei_code: str
     setsumei_level: int
-    setsumei_name: str
+    item_name: str
     amount: int
 
 
@@ -46,6 +48,12 @@ class TrendRow:
 
 MatchIdFn = Callable[[TrendKey], str]
 
+_NODE_KIND_ORDER = {
+    "節": 0,
+    "小区分": 1,
+    "説明": 2,
+}
+
 
 def _year_sort_key(value: str) -> tuple[int, str]:
     match = re.search(r"(\d+)", value)
@@ -58,6 +66,17 @@ def _clean_text(value: str) -> str:
 
 def _level_or_default(value: int | None) -> int:
     return value if value and value > 0 else 1
+
+
+def _setsu_label(number: int | None, name: str) -> str:
+    normalized_name = _clean_text(name)
+    return (
+        f"{number} {normalized_name}"
+        if number is not None and normalized_name
+        else str(number)
+        if number is not None
+        else normalized_name
+    )
 
 
 def _advance_path(
@@ -85,17 +104,73 @@ def rows_to_trend_nodes(
     rows: Sequence[FlatRow],
 ) -> tuple[TrendNode, ...]:
     path_state: dict[tuple[str, str, str, int | None, str, str], tuple[str, ...]] = {}
-    result: list[TrendNode] = []
+    setsu_nodes: dict[tuple[str, str, str, int | None, str], TrendNode] = {}
+    sub_item_nodes: dict[tuple[str, str, str, int | None, str, str], TrendNode] = {}
+    setsumei_nodes: list[TrendNode] = []
     for row in rows:
+        kan_name = _clean_text(row.kan_name)
+        kou_name = _clean_text(row.kou_name)
+        moku_name = _clean_text(row.moku_name)
+        setsu_name = _clean_text(row.setsu_name)
+        sub_item_name = _clean_text(row.sub_item_name)
         name = _clean_text(row.setsumei_name)
         level = _level_or_default(row.setsumei_level)
+        setsu_path = tuple((label,)) if (label := _setsu_label(row.setsu_number, setsu_name)) else ()
         context_key = (
-            _clean_text(row.kan_name),
-            _clean_text(row.kou_name),
-            _clean_text(row.moku_name),
+            kan_name,
+            kou_name,
+            moku_name,
             row.setsu_number,
-            _clean_text(row.setsu_name),
+            setsu_name,
             _clean_text(row.setsumei_code),
+        )
+        _ = (
+            setsu_nodes.setdefault(
+                (kan_name, kou_name, moku_name, row.setsu_number, setsu_name),
+                TrendNode(
+                    year=year,
+                    key=TrendKey(
+                        kan_name=kan_name,
+                        kou_name=kou_name,
+                        moku_name=moku_name,
+                        node_kind="節",
+                        path_levels=setsu_path,
+                    ),
+                    setsu_number=row.setsu_number,
+                    setsu_name=setsu_name,
+                    sub_item_name="",
+                    setsumei_code="",
+                    setsumei_level=1,
+                    item_name=setsu_path[0] if setsu_path else "",
+                    amount=row.setsu_amount,
+                ),
+            )
+            if setsu_path and row.setsu_amount is not None
+            else None
+        )
+        _ = (
+            sub_item_nodes.setdefault(
+                (kan_name, kou_name, moku_name, row.setsu_number, setsu_name, sub_item_name),
+                TrendNode(
+                    year=year,
+                    key=TrendKey(
+                        kan_name=kan_name,
+                        kou_name=kou_name,
+                        moku_name=moku_name,
+                        node_kind="小区分",
+                        path_levels=(*setsu_path, sub_item_name),
+                    ),
+                    setsu_number=row.setsu_number,
+                    setsu_name=setsu_name,
+                    sub_item_name=sub_item_name,
+                    setsumei_code="",
+                    setsumei_level=len((*setsu_path, sub_item_name)),
+                    item_name=sub_item_name,
+                    amount=row.sub_item_amount,
+                ),
+            )
+            if sub_item_name and row.sub_item_amount is not None
+            else None
         )
         next_levels = (
             _advance_path(path_state.get(context_key, ()), level, name)
@@ -104,24 +179,30 @@ def rows_to_trend_nodes(
         )
         path_state[context_key] = next_levels
         amount = row.setsumei_amount
-        result.append(
+        setsumei_nodes.append(
             TrendNode(
                 year=year,
                 key=TrendKey(
                     kan_name=context_key[0],
                     kou_name=context_key[1],
                     moku_name=context_key[2],
+                    node_kind="説明",
                     path_levels=_path_from_levels(next_levels),
                 ),
                 setsu_number=row.setsu_number,
                 setsu_name=context_key[4],
+                sub_item_name="",
                 setsumei_code=context_key[5],
                 setsumei_level=level,
-                setsumei_name=name,
+                item_name=name,
                 amount=amount if amount is not None else 0,
             )
         ) if name and amount is not None else None
-    return tuple(result)
+    return (
+        *tuple(setsu_nodes.values()),
+        *tuple(sub_item_nodes.values()),
+        *tuple(setsumei_nodes),
+    )
 
 
 def _status(base: int, latest: int) -> str:
@@ -143,14 +224,15 @@ def _ratio(base: int, diff: int) -> float | None:
 
 
 def trend_key_match_id_strict(key: TrendKey) -> str:
-    return "|".join((key.kan_name, key.kou_name, key.moku_name, *key.path_levels))
+    return "|".join((key.kan_name, key.kou_name, key.moku_name, key.node_kind, *key.path_levels))
 
 
-def _trend_key_sort_fields(key: TrendKey) -> tuple[str, str, str, tuple[str, ...]]:
+def _trend_key_sort_fields(key: TrendKey) -> tuple[str, str, str, int, tuple[str, ...]]:
     return (
         key.kan_name,
         key.kou_name,
         key.moku_name,
+        _NODE_KIND_ORDER.get(key.node_kind, 99),
         key.path_levels,
     )
 
@@ -220,7 +302,7 @@ def _max_path_depth(rows: Sequence[TrendRow]) -> int:
 
 
 def _base_headers(depth: int) -> tuple[str, ...]:
-    return ("款", "項", "目", *(f"説明L{i}" for i in range(1, depth + 1)))
+    return ("款", "項", "目", "種別", *(f"項目L{i}" for i in range(1, depth + 1)))
 
 
 def _sheet_row(
@@ -236,6 +318,7 @@ def _sheet_row(
         row.key.kan_name,
         row.key.kou_name,
         row.key.moku_name,
+        row.key.node_kind,
         *levels,
         *row.year_amounts,
         row.diff,
@@ -305,8 +388,8 @@ def write_trend_excel(
             sheet_down.cell(row=ri, column=ci, value=value)
 
     raw_headers = (
-        "年度", "款", "項", "目", "説明レベル", "説明", "説明パス", "説明金額",
-        "節番号", "節名", "事業コード",
+        "年度", "款", "項", "目", "種別", "階層レベル", "項目", "項目パス", "金額",
+        "節番号", "節名", "小区分", "事業コード",
     )
     write_header(sheet_raw, raw_headers)
     for ri, node in enumerate(nodes, 2):
@@ -315,12 +398,14 @@ def write_trend_excel(
             node.key.kan_name,
             node.key.kou_name,
             node.key.moku_name,
+            node.key.node_kind,
             node.setsumei_level,
-            node.setsumei_name,
+            node.item_name,
             " > ".join(node.key.path_levels),
             node.amount,
             node.setsu_number if node.setsu_number is not None else "",
             node.setsu_name,
+            node.sub_item_name,
             node.setsumei_code,
         )
         for ci, value in enumerate(values, 1):

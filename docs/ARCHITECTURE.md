@@ -7,7 +7,7 @@
 - **不変データ**: 全ドメイン型は `frozen dataclass`。mutation なし。
 - **純粋関数パイプライン**: 各モジュールは `f(input) → output` の純粋変換。IO は境界のみ。
 - **疎結合**: 各変換ステップは独立。依存は `types.py` のみ共有。
-- **関心の分離**: PDF読取 / 幾何構造 / 表解析 / 正規化 / 出力 は完全に分離。
+- **関心の分離**: PDF読取 / 幾何正規化 / 幾何構造 / 表解析 / 正規化 / 出力 は完全に分離。
 
 ---
 
@@ -18,6 +18,7 @@ types.py ← SSOT（全ドメイン型、依存なし）
   ↑
   ├── pipeline.py   ← 純粋合成: PDF path → SectionCells[] → SectionRows[]
   ├── extract.py    ← IO境界: pdfplumber
+  ├── geometry_normalize.py ← 純粋: PageGeometry → PageGeometry（footer artifact 除去）
   ├── grid.py       ← 純粋: 幾何構造 → Grid
   ├── cells.py      ← 純粋: 幾何構造 × Grid → Cell[]
   ├── header.py     ← 純粋: 幾何構造 × Grid → PageHeader
@@ -130,6 +131,7 @@ normalized PDF path
  │
  ▼ budget_cell.cli.pdf_to_rows
  │   ├─ extract.py: extract_all_geometries
+ │   ├─ geometry_normalize.py: normalize_page_geometries
  │   ├─ grid.py: extract_expenditure_pages → build_grid
  │   ├─ header.py: parse_page_header
  │   ├─ cells.py: assign_words_to_cells → merge.py: merge_rows → section.py: split_page_sections
@@ -155,7 +157,8 @@ Excel (.xlsx)                                      出力形式変換
 - `wide/long` は `rows_to_excel` の **投影** であり、PDF抽出・構造化ロジックとは非結合。
 - 既存Excelを起点にする場合は `excel_to_rows | rows_ffill | rows_to_excel` で同一パイプを再利用できる。
 - `make_spread` は `pdf_to_rows` の内部ではなく、その前段の **source normalization** に置く。
-- したがって pipeline 上の責務は `raw PDF -> normalized PDF -> NDJSON -> Excel` で分離される。
+- footer page number 除去は PDF rewrite ではなく、`extract.py` 後の **geometry normalization** に置く。
+- したがって pipeline 上の責務は `raw PDF -> normalized PDF -> normalized geometry -> NDJSON -> Excel` で分離される。
 
 ### 各ステップの変換
 
@@ -163,6 +166,7 @@ Excel (.xlsx)                                      出力形式変換
 |---|---|---|---|---|
 | Source正規化（任意） | `raw PDF path` | `normalized PDF path` | cli/make_spread (`spread`) | IO |
 | PDF読取 | `str (path)` | `tuple[PageGeometry,...]` | extract | IO |
+| Geometry正規化 | `tuple[PageGeometry,...]` | `tuple[PageGeometry,...]` | geometry_normalize | 純粋 |
 | 歳出フィルタ | `tuple[PageGeometry,...]` | `tuple[PageGeometry,...]` | grid | 純粋 |
 | Grid構築 | `PageGeometry` | `Grid` | grid | 純粋 |
 | ヘッダ抽出 | `PageGeometry × Grid` | `PageHeader \| None` | header | 純粋 |
@@ -188,6 +192,15 @@ Excel (.xlsx)                                      出力形式変換
 - `extract_page_geometry(page) → PageGeometry` — 1ページの幾何情報抽出
 - `extract_geometry_from_path(path, page_index=0) → PageGeometry` — 単一ページ
 - `extract_all_geometries(path) → tuple[PageGeometry,...]` — 全ページ map
+
+### geometry_normalize.py — PageGeometry 正規化
+
+`extract.py` の lossless な出力を保ったまま、表外の footer artifact を除去する純粋変換。
+R6 spread fixture ではページ番号 `- 240 -` 系が `Word` として現れ、horizontal line が欠落した
+ページでは `grid.py` の row clustering に混ざるため、この段階で `PageGeometry.words` から落とす。
+
+- `normalize_page_geometry(geom) → PageGeometry`
+- `normalize_page_geometries(geoms) → tuple[PageGeometry,...]`
 
 ### grid.py — 幾何構造 → Grid
 
@@ -341,6 +354,7 @@ budget_cell/
 ├── types.py           ドメイン型定義（SSOT）
 ├── pipeline.py        PDF path → section/unit transforms（純粋合成）
 ├── extract.py         IO: pdfplumber → PageGeometry
+├── geometry_normalize.py PageGeometry → PageGeometry（footer artifact 除去）
 ├── grid.py            PageGeometry → Grid, 歳出フィルタ
 ├── cells.py           PageGeometry × Grid → Cell[]
 ├── header.py          PageGeometry × Grid → PageHeader

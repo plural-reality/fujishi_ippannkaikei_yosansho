@@ -31,6 +31,7 @@ def trend_key_match_id_loose(key: TrendKey) -> str:
             _normalize_token(key.kan_name),
             _normalize_token(key.kou_name),
             _normalize_token(key.moku_name),
+            _normalize_token(key.node_kind),
             *tuple(_normalize_token(level) for level in key.path_levels),
         )
     )
