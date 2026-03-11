@@ -14,9 +14,9 @@ from budget_cell.types import FlatRow
 
 
 ROOT = Path(__file__).resolve().parent.parent
-R6_PDF = ROOT / "tests" / "fixtures" / "r6" / "budget_spread_cover1_v3.pdf"
-R6_SHORT = ROOT / "tests" / "fixtures" / "r6" / "budget_spread_cover1_short_v3.xlsx"
-R6_LONG = ROOT / "tests" / "fixtures" / "r6" / "budget_spread_cover1_long_v3.xlsx"
+R6_PDF = ROOT / "tests" / "fixtures" / "r6" / "input" / "budget-spread.pdf"
+R6_SHORT = ROOT / "tests" / "fixtures" / "r6" / "expected" / "budget-spread-short.xlsx"
+R6_LONG = ROOT / "tests" / "fixtures" / "r6" / "expected" / "budget-spread-long.xlsx"
 _KOU_AS_MOKU_RE = re.compile(r"^[0-9０-９]+項$")
 
 pytestmark = pytest.mark.skipif(

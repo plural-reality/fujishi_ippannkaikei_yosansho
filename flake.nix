@@ -85,12 +85,12 @@
           pattern = re.compile(r"^[0-9０-９]+項$")
 
           pdf_rows = sectioned_ffill(
-              rows_from_pdf("tests/fixtures/r6/budget_spread_cover1_v3.pdf", ffill_fields=None),
+              rows_from_pdf("tests/fixtures/r6/input/budget-spread.pdf", ffill_fields=None),
               FFILL_FIELDS,
               key_fn=lambda row: (row.kan_name, row.kou_name),
           )
-          short_rows = read_rows_from_excel_path("tests/fixtures/r6/budget_spread_cover1_short_v3.xlsx")
-          long_rows = read_rows_from_excel_path("tests/fixtures/r6/budget_spread_cover1_long_v3.xlsx")
+          short_rows = read_rows_from_excel_path("tests/fixtures/r6/expected/budget-spread-short.xlsx")
+          long_rows = read_rows_from_excel_path("tests/fixtures/r6/expected/budget-spread-long.xlsx")
 
           hits = tuple(
               (label, index, row.moku_name, row.kan_name, row.kou_name)
@@ -135,8 +135,8 @@
           from budget_cell.cli.to_excel import process_pdf_to_excel
           from budget_cell.excel_io import read_rows_from_excel_path
 
-          src_pdf = "tests/fixtures/r6/budget_spread_cover1_v3.pdf"
-          src_xlsx = "tests/fixtures/r6/budget_spread_cover1_short_v3.xlsx"
+          src_pdf = "tests/fixtures/r6/input/budget-spread.pdf"
+          src_xlsx = "tests/fixtures/r6/expected/budget-spread-short.xlsx"
           dst_xlsx = Path(os.environ["TMPDIR"]) / "result-r6-short.xlsx"
           pattern = re.compile(r"^[0-9０-９]+項$")
 

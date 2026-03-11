@@ -4,4 +4,5 @@
 .env
 __pycache__
 .pytest_cache
-result
+result/*
+!result/.gitkeep

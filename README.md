@@ -1,6 +1,6 @@
 # 富士市一般会計予算書 `budget_cell`
 
-`budget_cell` は PDF の表セルを `FlatRow` ストリームへ変換し、必要に応じて Excel へ投影するパイプラインです。正準構成は `flake.nix` に寄せてあり、実装は `budget_cell/`、検証は `tests/`、回帰 fixture は `tests/fixtures/` に集約しています。
+`budget_cell` は PDF の表セルを `FlatRow` ストリームへ変換し、必要に応じて Excel へ投影するパイプラインです。正準構成は `flake.nix` に寄せてあり、実装、入力、回帰 fixture、生成物を別レイヤに分けています。
 
 ## Canonical Layout
 
@@ -9,17 +9,30 @@
 ├── flake.nix
 ├── flake.lock
 ├── README.md
+├── docs/
+│   └── ARCHITECTURE.md
+├── inputs/
+│   ├── r6-budget.pdf
+│   ├── r7-budget.pdf
+│   └── r8-budget.pdf
 ├── budget_cell/
-│   ├── ARCHITECTURE.md
 │   ├── cli/
 │   └── *.py
-└── tests/
-    ├── fixtures/
-    │   └── r6/
-    │       ├── budget_spread_cover1_v3.pdf
-    │       ├── budget_spread_cover1_short_v3.xlsx
-    │       └── budget_spread_cover1_long_v3.xlsx
-    └── test_*.py
+├── tests/
+│   ├── fixtures/
+│   │   ├── r6/
+│   │   │   ├── input/
+│   │   │   │   └── budget-spread.pdf
+│   │   │   └── expected/
+│   │   │       ├── budget-spread-short.xlsx
+│   │   │       └── budget-spread-long.xlsx
+│   │   └── r8/
+│   │       └── expected/
+│   │           └── budget-long-ffill.xlsx
+│   └── test_*.py
+└── result/
+    ├── .gitkeep
+    └── r6-r8-trend-compare-loose.xlsx
 ```
 
 ## Pipeline
@@ -41,14 +54,13 @@ Excel
 ```bash
 nix develop
 nix run .#test
-nix run .#pdf-to-rows -- path/to/input.pdf
-nix run .#rows-ffill -- --fields kan_name kou_name
-nix run .#rows-to-excel -- --layout long path/to/output.xlsx
-nix run .#to-excel -- path/to/input.pdf path/to/output.xlsx --layout wide
-nix run .#overlay -- path/to/input.pdf path/to/output.pdf
-nix run .#make-spread -- path/to/input.pdf path/to/output.pdf
-nix run .#trend-cell -- --input R6=path/to/r6.xlsx --input R8=path/to/r8.xlsx path/to/output.xlsx
-nix run .#verify-excel -- path/to/workbook.xlsx
+nix run .#pdf-to-rows -- inputs/r8-budget.pdf | nix run .#rows-ffill -- | nix run .#rows-to-excel -- result/r8-long-pipe.xlsx --layout long
+nix run .#to-excel -- inputs/r8-budget.pdf result/r8-long.xlsx --layout long
+nix run .#to-excel -- inputs/r8-budget.pdf result/r8-wide.xlsx --layout wide
+nix run .#overlay -- inputs/r8-budget.pdf result/r8-overlay.pdf
+nix run .#make-spread -- inputs/r6-budget.pdf result/r6-spread.pdf
+nix run .#trend-cell -- --matcher loose --input R6=tests/fixtures/r6/expected/budget-spread-long.xlsx --input R8=tests/fixtures/r8/expected/budget-long-ffill.xlsx result/r6-r8-trend-compare-loose.xlsx
+nix run .#verify-excel -- tests/fixtures/r6/expected/budget-spread-short.xlsx
 ```
 
 ## Verification
@@ -57,7 +69,15 @@ nix run .#verify-excel -- path/to/workbook.xlsx
   - `checks.pytest`
   - `checks.r6-regression`
   - `checks.r6-pdf-to-short-regression`
+- `inputs/*.pdf`
+  - 通常入力として扱う元 PDF
 - `tests/fixtures/r6/`
-  - R6 見開き PDF と short/long workbook の回帰基準
+  - `input/` は回帰テスト用入力
+  - `expected/` は golden workbook
+- `tests/fixtures/r8/expected/budget-long-ffill.xlsx`
+  - 比較表生成の基準に使う R8 workbook
+- `result/`
+  - 実行生成物の退避先。Git 管理外
+  - `r6-r8-trend-compare-loose.xlsx` は最終成果物の配置先
 
-詳細な依存グラフとモジュール境界は `budget_cell/ARCHITECTURE.md` を参照してください。
+詳細な依存グラフとモジュール境界は `docs/ARCHITECTURE.md` を参照してください。
