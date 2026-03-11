@@ -1,11 +1,10 @@
 """
-Pure mid-page section split: detect 項 transitions within a single page's cells.
+Pure mid-page section split driven by cell-layer 款/項 markers.
 
-A page can contain data for multiple (款, 項) sections when a subtotal row
-("計 N款 ...") is followed by a new section header ("N項 ...").
-
-This module splits a page's cells at those boundaries, producing one or more
-(PageHeader, cells) segments.
+A page can contain repeated page-top headers and mid-page transitions where
+new 款/項 labels are rendered inside table cells instead of above the grid.
+This module removes those meta rows and splits cells into (PageHeader, cells)
+segments using the cell layer as the source of truth.
 
 Depends only on types + re. No IO.
 """
@@ -13,151 +12,222 @@ Depends only on types + re. No IO.
 from __future__ import annotations
 
 import re
-from typing import Sequence
+from functools import reduce
+from typing import Mapping, Sequence
 
 from budget_cell.types import Cell, PageHeader
 
 
-# ---------------------------------------------------------------------------
-# Detection patterns
-# ---------------------------------------------------------------------------
+_SUBTOTAL_RE = re.compile(r"^計\s*")
+_KAN_RE = re.compile(r"([０-９\d]+)\s*款")
+_KOU_RE = re.compile(r"([０-９\d]+)\s*項")
+_HEADER_TOKENS = frozenset({
+    "目", "千円", "節", "本年度予算額", "前年度予算額",
+    "一般財源", "国県支出金", "地方債", "その他",
+    "区分", "金額", "説明", "比較", "歳出",
+})
 
-_SUBTOTAL_RE = re.compile(r"^計\s")
-_KOU_TRANSITION_RE = re.compile(r"^([０-９\d]+)項$")
+_HeaderUpdate = tuple[str, str, str, str]
 
 COL_MOKU = 0
-COL_HONENDO = 1
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers
-# ---------------------------------------------------------------------------
-
-def _cell_text(cells: Sequence[Cell], row: int, col: int) -> str:
-    return next(
-        (c.text.strip() for c in cells if c.row == row and c.col == col),
-        "",
-    )
+def _normalize(value: str) -> str:
+    return value.strip().replace(" ", "").replace("\n", "").replace("\u3000", "")
 
 
 def _unique_rows(cells: Sequence[Cell]) -> tuple[int, ...]:
     return tuple(sorted({c.row for c in cells}))
 
 
-def _is_subtotal_row(cells: Sequence[Cell], row: int) -> bool:
-    text = _cell_text(cells, row, COL_MOKU)
-    return bool(_SUBTOTAL_RE.match(text))
+def _row_cells(cells: Sequence[Cell]) -> Mapping[int, tuple[Cell, ...]]:
+    rows = _unique_rows(cells)
+    return {
+        row: tuple(sorted((c for c in cells if c.row == row), key=lambda c: c.col))
+        for row in rows
+    }
 
 
-def _is_kou_transition_row(cells: Sequence[Cell], row: int) -> tuple[str, str] | None:
-    """If row is a 項 transition header, return (kou_number, kou_name). Else None."""
-    moku_text = _cell_text(cells, row, COL_MOKU)
-    m = _KOU_TRANSITION_RE.match(moku_text)
+def _cell_text(row_cells: Sequence[Cell], col: int) -> str:
+    return next((c.text.strip() for c in row_cells if c.col == col), "")
+
+
+def _candidate_name(text: str) -> str:
+    normalized = _normalize(text)
     return (
-        (m.group(1), _cell_text(cells, row, COL_HONENDO))
-        if m is not None
-        else None
+        ""
+        if not normalized
+        or bool(_KAN_RE.search(normalized))
+        or bool(_KOU_RE.search(normalized))
+        or normalized in _HEADER_TOKENS
+        else normalized
     )
+
+
+def _extract_tag(
+    row_cells: Sequence[Cell],
+    pattern: re.Pattern[str],
+    other_pattern: re.Pattern[str],
+    allow_next_after_other: bool,
+) -> tuple[str, str] | None:
+    normalized_cells = tuple(_normalize(cell.text) for cell in row_cells)
+
+    def next_name(index: int) -> str:
+        return (
+            _candidate_name(row_cells[index + 1].text)
+            if index + 1 < len(row_cells)
+            else ""
+        )
+
+    def joined_match() -> tuple[str, str] | None:
+        return next(
+            (
+                (
+                    match.group(1),
+                    suffix
+                    if suffix
+                    else (
+                        _candidate_name(row_cells[end].text)
+                        if end < len(row_cells) and (
+                            allow_next_after_other or not bool(other_pattern.search(joined))
+                        )
+                        else ""
+                    ),
+                )
+                for start in range(len(normalized_cells))
+                for end in range(start + 2, min(start + 4, len(normalized_cells)) + 1)
+                for joined in ("".join(normalized_cells[start:end]),)
+                for match in (pattern.search(joined),)
+                if match is not None
+                for suffix in (_candidate_name(joined[match.end():]),)
+            ),
+            None,
+        )
+
+    tagged = next(
+        (
+            (index, cell, found[-1])
+            for index, cell in enumerate(row_cells)
+            for found in (tuple(pattern.finditer(_normalize(cell.text))),)
+            if found
+        ),
+        None,
+    )
+    if tagged is None:
+        return joined_match()
+
+    index, cell, match = tagged
+    normalized = _normalize(cell.text)
+    suffix = _candidate_name(normalized[match.end():])
+    allow_next = allow_next_after_other or not bool(other_pattern.search(normalized))
+    name = suffix if suffix else next_name(index) if allow_next else ""
+    return (match.group(1), name)
+
+
+def _extract_row_update(row_cells: Sequence[Cell]) -> _HeaderUpdate:
+    kan = _extract_tag(row_cells, _KAN_RE, _KOU_RE, True)
+    kou = _extract_tag(row_cells, _KOU_RE, _KAN_RE, False)
+    return (
+        kan[0] if kan is not None else "",
+        kan[1] if kan is not None else "",
+        kou[0] if kou is not None else "",
+        kou[1] if kou is not None else "",
+    )
+
+
+def _has_update(update: _HeaderUpdate) -> bool:
+    return any(update)
+
+
+def _merge_header(base: PageHeader, update: _HeaderUpdate) -> PageHeader:
+    kan_number, kan_name, kou_number, kou_name = update
+    return PageHeader(
+        kan_number=kan_number or base.kan_number,
+        kan_name=kan_name or base.kan_name,
+        kou_number=kou_number or base.kou_number,
+        kou_name=kou_name or base.kou_name,
+    )
+
+
+def _is_subtotal_row(row_cells: Sequence[Cell]) -> bool:
+    return bool(_SUBTOTAL_RE.match(_cell_text(row_cells, COL_MOKU)))
+
+
+def _is_table_header_row(row_cells: Sequence[Cell]) -> bool:
+    texts = frozenset(_normalize(cell.text) for cell in row_cells if _normalize(cell.text))
+    return bool(texts & _HEADER_TOKENS)
 
 
 def _cells_in_rows(cells: Sequence[Cell], rows: frozenset[int]) -> tuple[Cell, ...]:
     return tuple(c for c in cells if c.row in rows)
 
 
-# ---------------------------------------------------------------------------
-# Split logic
-# ---------------------------------------------------------------------------
-
 def split_page_sections(
     header: PageHeader,
     cells: Sequence[Cell],
 ) -> tuple[tuple[PageHeader, tuple[Cell, ...]], ...]:
-    """Split a page's cells at mid-page 項 transitions.
-
-    Returns one or more (PageHeader, cells) segments.
-    Normal pages (no transition) → single segment.
-    Transition pages → pre-transition segment + post-transition segment(s).
-    """
     rows = _unique_rows(cells)
-    split_points = _find_split_points(cells, rows)
+    by_row = _row_cells(cells)
 
-    return (
-        ((header, tuple(cells)),)
-        if not split_points
-        else _split_at(header, cells, rows, split_points)
-    )
-
-
-def _find_split_points(
-    cells: Sequence[Cell],
-    rows: tuple[int, ...],
-) -> tuple[tuple[int, int, str, str], ...]:
-    """Find (subtotal_row, transition_row, kou_number, kou_name) tuples."""
-    points: list[tuple[int, int, str, str]] = []
-    for i, r in enumerate(rows):
-        if _is_subtotal_row(cells, r):
-            # Look ahead for a 項 transition row
-            for j in range(i + 1, len(rows)):
-                kou = _is_kou_transition_row(cells, rows[j])
-                if kou is not None:
-                    points.append((r, rows[j], kou[0], kou[1]))
-                    break
-    return tuple(points)
-
-
-def _split_at(
-    header: PageHeader,
-    cells: Sequence[Cell],
-    rows: tuple[int, ...],
-    split_points: tuple[tuple[int, int, str, str], ...],
-) -> tuple[tuple[PageHeader, tuple[Cell, ...]], ...]:
-    """Split cells into segments at the given split points."""
-    # Collect rows to exclude (subtotal + transition rows)
-    exclude_rows = frozenset(
-        r for sub_r, trans_r, _, _ in split_points for r in (sub_r, trans_r)
-    )
-
-    # Build boundary list: row indices where new sections start (first data row after transition)
-    boundaries: list[tuple[int, PageHeader]] = []
-    for sub_r, trans_r, kou_num, kou_name in split_points:
-        # First row after the transition row
-        data_start = next(
-            (r for r in rows if r > trans_r and r not in exclude_rows),
-            None,
+    def step(
+        acc: tuple[
+            tuple[tuple[PageHeader, frozenset[int]], ...],
+            PageHeader,
+            PageHeader,
+            frozenset[int],
+        ],
+        row: int,
+    ) -> tuple[
+        tuple[tuple[PageHeader, frozenset[int]], ...],
+        PageHeader,
+        PageHeader,
+        frozenset[int],
+    ]:
+        segments, current_header, pending_header, current_rows = acc
+        row_cells = by_row[row]
+        update = _extract_row_update(row_cells)
+        is_meta = (
+            _is_subtotal_row(row_cells)
+            or _is_table_header_row(row_cells)
+            or _has_update(update)
         )
-        if data_start is not None:
-            new_header = PageHeader(
-                kan_number=header.kan_number,
-                kan_name=header.kan_name,
-                kou_number=kou_num,
-                kou_name=kou_name,
+        next_pending = _merge_header(pending_header, update) if _has_update(update) else pending_header
+        should_split = bool(current_rows) and next_pending != current_header and not is_meta
+        next_segments = (
+            (*segments, (current_header, current_rows))
+            if should_split
+            else segments
+        )
+        next_current_header = (
+            next_pending
+            if not current_rows or should_split
+            else current_header
+        )
+        next_rows = (
+            current_rows
+            if is_meta
+            else (
+                frozenset((row,))
+                if should_split or not current_rows
+                else frozenset((*current_rows, row))
             )
-            boundaries.append((data_start, new_header))
-
-    # Build segments
-    all_data_rows = tuple(r for r in rows if r not in exclude_rows)
-    segments: list[tuple[PageHeader, tuple[Cell, ...]]] = []
-    current_header = header
-    current_start = 0
-
-    for boundary_row, new_header in boundaries:
-        seg_rows = frozenset(
-            r for r in all_data_rows[current_start:]
-            if r < boundary_row
         )
-        seg_cells = _cells_in_rows(cells, seg_rows)
-        if seg_cells:
-            segments.append((current_header, seg_cells))
-        current_header = new_header
-        current_start = next(
-            (i for i, r in enumerate(all_data_rows) if r >= boundary_row),
-            len(all_data_rows),
-        )
+        return (next_segments, next_current_header, next_pending, next_rows)
 
-    # Final segment
-    remaining_rows = frozenset(all_data_rows[current_start:])
-    remaining_cells = _cells_in_rows(cells, remaining_rows)
-    if remaining_cells:
-        segments.append((current_header, remaining_cells))
+    segments, current_header, _, current_rows = (
+        ((), header, header, frozenset())
+        if not rows
+        else reduce(step, rows, ((), header, header, frozenset()))
+    )
 
-    return tuple(segments)
+    finalized = (
+        (*segments, (current_header, current_rows))
+        if current_rows
+        else segments
+    )
+
+    return tuple(
+        (segment_header, _cells_in_rows(cells, segment_rows))
+        for segment_header, segment_rows in finalized
+        if segment_rows
+    )

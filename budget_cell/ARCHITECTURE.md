@@ -198,10 +198,11 @@ Excel (.xlsx)                                      出力形式変換
 
 - `merge_rows(cells) → tuple[Cell,...]`
 
-### section.py — ページ内の項境界分割
+### section.py — ページ内の款/項境界分割
 
 1ページ内に複数の(款,項)セクションが含まれるケースを検出・分割。
-小計行（`計 N款 ...`）+ 項遷移行（`N項`）のパターンで境界を判定。
+ページ上端ヘッダではなく、表セル内に現れる款/項 marker を SSOT として扱い、
+小計行・繰り返し表ヘッダ・中間の款/項ラベル行を除去しながら境界を確定する。
 
 - `split_page_sections(header, cells) → tuple[(PageHeader, tuple[Cell,...]),...]`
 
@@ -341,5 +342,8 @@ tests/
 ├── test_flatten.py    flatten / ffill / label_section テスト
 ├── test_row_stream.py NDJSON adapter テスト
 ├── test_excel_io.py   Excel projection テスト
-└── test_header.py     ヘッダ抽出テスト
+├── test_header.py     ヘッダ抽出テスト
+├── test_r6_regression.py R6 fixture 回帰テスト
+├── test_section.py    ページ内款/項境界分割テスト
+└── test_verify_excel.py workbook 検証CLIテスト
 ```
