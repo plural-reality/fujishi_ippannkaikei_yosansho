@@ -71,23 +71,22 @@ def parse_setsu_text(text: str) -> tuple[int, str] | None:
 # Coordinate-based setsumei parsing (replaces regex-based parse_setsumei_line)
 # ---------------------------------------------------------------------------
 
-_AMOUNT_MARGIN = 50.0   # words within this distance of cell right edge → amount
-_CODE_MARGIN = 25.0     # words within this distance of cell left edge + 3-digit → code
 _LINE_Y_TOLERANCE = 1.2  # same logical line if y-center distance <= this value
+_MERGE_Y_TOLERANCE = 1.0  # merge consecutive lines if y-gap <= this value
 _INDENT_NOISE = 2.5
 _CODE_TO_NAME_OFFSET_DEFAULT = 14.0
 _CODE_RE = re.compile(r"^\d{3}$")
-_AMOUNT_RE = re.compile(r"^[\d,△\-]+$")
+_AMOUNT_RE = re.compile(r"^[\d,△]+$")  # digits, commas, triangle only (no text like "1人")
 
 
-def _is_amount_word(w: Word, cell_x1: float) -> bool:
-    """Word is near cell right edge and looks like a number."""
-    return cell_x1 - w.x1 < _AMOUNT_MARGIN and bool(_AMOUNT_RE.match(w.text))
+def _is_code(text: str) -> bool:
+    """Check if text is a 3-digit code."""
+    return bool(_CODE_RE.match(text))
 
 
-def _is_code_word(w: Word, cell_x0: float) -> bool:
-    """Word is near cell left edge and is a 3-digit code."""
-    return w.x0 - cell_x0 < _CODE_MARGIN and bool(_CODE_RE.match(w.text))
+def _is_amount(text: str) -> bool:
+    """Check if text is a pure amount (digits and commas only, no text)."""
+    return bool(_AMOUNT_RE.match(text))
 
 
 def parse_setsumei_cell(cell: Cell) -> SetsumeiEntry:
@@ -97,26 +96,51 @@ def parse_setsumei_cell(cell: Cell) -> SetsumeiEntry:
       [code]  [name ...]  [amount]
        left     middle      right-aligned
 
-    Coordinate-based separation is strictly more robust than regex.
+    Words are processed left-to-right:
+    - First word: code if 3-digit, else name
+    - Last word: amount if digits+commas only, else name
+    - Middle words: name
     """
     words = cell.words
     return (
         SetsumeiEntry("text", None, "", None)
         if not words
-        else _parse_setsumei_from_words(words, cell.x0, cell.x1)
+        else _parse_setsumei_from_words(words)
     )
 
 
-def _parse_setsumei_from_words(
-    words: tuple[Word, ...], cell_x0: float, cell_x1: float,
-) -> SetsumeiEntry:
-    amount_ws = tuple(w for w in words if _is_amount_word(w, cell_x1))
-    code_ws = tuple(w for w in words if _is_code_word(w, cell_x0))
-    name_ws = tuple(w for w in words if w not in amount_ws and w not in code_ws)
+def _parse_setsumei_from_words(words: tuple[Word, ...]) -> SetsumeiEntry:
+    """Parse words left-to-right: [code?] [name...] [amount?]."""
+    sorted_words = sorted(words, key=lambda w: (w.y0, w.x0))
 
-    code = code_ws[0].text if code_ws else None
-    name = " ".join(w.text for w in name_ws)
-    amount = parse_amount(" ".join(w.text for w in amount_ws)) if amount_ws else None
+    if not sorted_words:
+        return SetsumeiEntry("text", None, "", None)
+
+    # Check for code at the very first position
+    code = None
+    if _is_code(sorted_words[0].text):
+        code = sorted_words[0].text
+        sorted_words = sorted_words[1:]
+
+    if not sorted_words:
+        return SetsumeiEntry("coded" if code else "text", code, "", None)
+
+    # Check for amount at the very last position
+    amount = None
+    if _is_amount(sorted_words[-1].text):
+        amount = parse_amount(sorted_words[-1].text)
+        sorted_words = sorted_words[:-1]
+
+    # Validate: no code should appear except at the first position
+    for w in sorted_words:
+        if _is_code(w.text):
+            raise ValueError(
+                f"Unexpected code '{w.text}' found in middle of setsumei. "
+                f"Code must be at the first position only. Words: {[w.text for w in words]}"
+            )
+
+    # Remaining words are name
+    name = " ".join(w.text for w in sorted_words)
 
     return SetsumeiEntry(
         kind="coded" if code else "text",
@@ -165,40 +189,109 @@ def split_words_into_lines(words: Sequence[Word]) -> tuple[tuple[Word, ...], ...
 
 
 def _parse_setsumei_line(
-    words: tuple[Word, ...], cell_x0: float, cell_x1: float,
+    words: tuple[Word, ...],
 ) -> tuple[SetsumeiEntry, bool, float | None, float | None]:
-    """Parse one logical line.
+    """Parse one logical line left-to-right.
 
     Returns:
       - entry
-      - has_amount (right-edge numeric token exists)
+      - has_amount (last word is numeric)
       - code_x (left x of code token, if any)
-      - name_x (left x of name token, if any)
+      - name_x (left x of first name token, if any)
     """
-    amount_ws = tuple(w for w in words if _is_amount_word(w, cell_x1))
-    code_ws = tuple(w for w in words if _is_code_word(w, cell_x0))
-    name_ws = tuple(w for w in words if w not in amount_ws and w not in code_ws)
+    sorted_words = list(sorted(words, key=lambda w: w.x0))
 
-    code = code_ws[0].text if code_ws else None
-    amount = parse_amount(" ".join(w.text for w in amount_ws)) if amount_ws else None
+    if not sorted_words:
+        return (SetsumeiEntry("text", None, "", None), False, None, None)
+
+    # Code at first position only
+    code = None
+    code_x = None
+    if _is_code(sorted_words[0].text):
+        code = sorted_words[0].text
+        code_x = sorted_words[0].x0
+        sorted_words = sorted_words[1:]
+
+    if not sorted_words:
+        return (SetsumeiEntry("coded" if code else "text", code, "", None), False, code_x, None)
+
+    # Amount at last position only
+    amount = None
+    has_amount = False
+    if _is_amount(sorted_words[-1].text):
+        amount = parse_amount(sorted_words[-1].text)
+        has_amount = True
+        sorted_words = sorted_words[:-1]
+
+    # Remaining words are name
+    name_x = sorted_words[0].x0 if sorted_words else None
+    name = " ".join(w.text for w in sorted_words)
+
     entry = SetsumeiEntry(
         kind="coded" if code else "text",
         code=code,
-        name=" ".join(w.text for w in name_ws),
+        name=name,
         amount=amount,
     )
-    code_x = code_ws[0].x0 if code_ws else None
-    name_x = name_ws[0].x0 if name_ws else None
-    return (entry, bool(amount_ws), code_x, name_x)
+    return (entry, has_amount, code_x, name_x)
+
+
+def _line_bottom_y(words: tuple[Word, ...]) -> float:
+    """Get the bottom y-coordinate of a line."""
+    return max(w.y1 for w in words) if words else 0.0
+
+
+def _line_top_y(words: tuple[Word, ...]) -> float:
+    """Get the top y-coordinate of a line."""
+    return min(w.y0 for w in words) if words else 0.0
+
+
+def _merge_close_lines(
+    lines: tuple[tuple[Word, ...], ...],
+) -> tuple[tuple[Word, ...], ...]:
+    """Merge consecutive lines if y-gap <= _MERGE_Y_TOLERANCE (1pt).
+
+    Lines with gap <= 1pt are considered "two lines forming one entry".
+    """
+    if not lines:
+        return ()
+
+    merged: list[tuple[Word, ...]] = []
+    current_words: list[Word] = list(lines[0])
+    current_bottom = _line_bottom_y(lines[0])
+
+    for line in lines[1:]:
+        line_top = _line_top_y(line)
+        gap = line_top - current_bottom
+
+        if gap <= _MERGE_Y_TOLERANCE:
+            # Merge: add words to current group
+            current_words.extend(line)
+            current_bottom = max(current_bottom, _line_bottom_y(line))
+        else:
+            # New group
+            merged.append(tuple(sorted(current_words, key=lambda w: (w.y0, w.x0))))
+            current_words = list(line)
+            current_bottom = _line_bottom_y(line)
+
+    # Finalize last group
+    merged.append(tuple(sorted(current_words, key=lambda w: (w.y0, w.x0))))
+
+    return tuple(merged)
 
 
 def parse_setsumei_cell_lines(
     cell: Cell,
 ) -> tuple[tuple[SetsumeiEntry, bool, float | None, float | None], ...]:
-    """Parse one setsumei cell into logical line entries with amount-anchor flag."""
+    """Parse one setsumei cell into logical line entries with amount-anchor flag.
+
+    Lines within 1pt y-gap are merged into a single entry.
+    """
+    raw_lines = split_words_into_lines(cell.words)
+    merged_lines = _merge_close_lines(raw_lines)
     return tuple(
-        _parse_setsumei_line(line_words, cell.x0, cell.x1)
-        for line_words in split_words_into_lines(cell.words)
+        _parse_setsumei_line(line_words)
+        for line_words in merged_lines
     )
 
 
