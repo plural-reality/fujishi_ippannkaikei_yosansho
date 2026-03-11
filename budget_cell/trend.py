@@ -116,12 +116,11 @@ def rows_to_trend_nodes(
         name = _clean_text(row.setsumei_name)
         level = _level_or_default(row.setsumei_level)
         setsu_path = tuple((label,)) if (label := _setsu_label(row.setsu_number, setsu_name)) else ()
+        # 説明 is 1:1 with 目 — path state keyed by (moku, code), not (moku, setsu, code)
         context_key = (
             kan_name,
             kou_name,
             moku_name,
-            row.setsu_number,
-            setsu_name,
             _clean_text(row.setsumei_code),
         )
         _ = (
@@ -190,9 +189,9 @@ def rows_to_trend_nodes(
                     path_levels=_path_from_levels(next_levels),
                 ),
                 setsu_number=row.setsu_number,
-                setsu_name=context_key[4],
+                setsu_name=setsu_name,
                 sub_item_name="",
-                setsumei_code=context_key[5],
+                setsumei_code=context_key[3],
                 setsumei_level=level,
                 item_name=name,
                 amount=amount if amount is not None else 0,

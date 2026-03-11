@@ -525,10 +525,56 @@ def collect_full_name(idx: CellIndex, base_row: int, child_rows: Sequence[int]) 
 # Record assembly (pure)
 # ---------------------------------------------------------------------------
 
+def _collect_setsumei_cells(
+    idx: CellIndex,
+    setsu_row: int | None,
+    child_rows: tuple[int, ...],
+) -> tuple[Cell, ...]:
+    """Collect setsumei cells for one setsu group (rows only, no level resolution)."""
+    skip = len(_continuation_rows(idx, child_rows)) if setsu_row is not None else 0
+    effective = child_rows[skip:]
+    setsumei_rows = (
+        ((setsu_row,) if setsu_row is not None else ())
+        + tuple(effective)
+    )
+    return tuple(
+        cell
+        for r in setsumei_rows
+        if (cell := cell_at(idx, r, COL_SETSUMEI)) is not None and cell.text.strip()
+    )
+
+
+def _fold_setsumei_with_anchors(
+    cells: Sequence[Cell],
+    anchors: tuple[float, ...],
+    code_to_name_offset: float,
+) -> tuple[SetsumeiEntry, ...]:
+    """Fold setsumei cells using pre-computed moku-level anchors."""
+    lines = tuple(
+        line
+        for cell in cells
+        for line in parse_setsumei_cell_lines(cell)
+    )
+
+    def normalized_left(code_x: float | None, name_x: float | None) -> float | None:
+        return (
+            code_x
+            if code_x is not None
+            else (name_x - code_to_name_offset if name_x is not None else None)
+        )
+
+    return tuple(
+        _apply_level(entry, _nearest_level(normalized_left(code_x, name_x), anchors))
+        for entry, _, code_x, name_x in lines
+    )
+
+
 def build_setsu_record(
     idx: CellIndex,
     setsu_row: int | None,
     child_rows: tuple[int, ...],
+    moku_anchors: tuple[float, ...] | None = None,
+    moku_code_to_name_offset: float | None = None,
 ) -> SetsuRecord:
     full_name = (
         collect_full_name(idx, setsu_row, child_rows) if setsu_row is not None else ""
@@ -550,22 +596,35 @@ def build_setsu_record(
         if _is_sub_item(idx, r)
     )
 
-    # Collect setsumei using coordinate-based parsing
-    setsumei_rows = (
-        ((setsu_row,) if setsu_row is not None else ())
-        + tuple(effective)
+    setsumei_cells = _collect_setsumei_cells(idx, setsu_row, child_rows)
+    setsumei = (
+        _fold_setsumei_with_anchors(setsumei_cells, moku_anchors, moku_code_to_name_offset)
+        if moku_anchors is not None and moku_code_to_name_offset is not None
+        else parse_setsumei_cells(setsumei_cells)
     )
-    setsumei_cells = tuple(
-        cell
-        for r in setsumei_rows
-        if (cell := cell_at(idx, r, COL_SETSUMEI)) is not None and cell.text.strip()
-    )
-    setsumei = parse_setsumei_cells(setsumei_cells)
 
     return SetsuRecord(
         number=number, name=name, amount=amount,
         sub_items=sub_items, setsumei=setsumei,
     )
+
+
+def _moku_level_anchors(
+    idx: CellIndex,
+    setsu_groups: Sequence[tuple[int | None, tuple[int, ...]]],
+) -> tuple[float, tuple[float, ...]]:
+    """Compute setsumei level anchors across all setsu in one moku.
+
+    説明 is 1:1 with 目 — indent anchors must be resolved at moku scope,
+    not per-setsu, to avoid context fragmentation across 節 boundaries.
+    """
+    all_lines = tuple(
+        line
+        for sr, cr in setsu_groups
+        for cell in _collect_setsumei_cells(idx, sr, cr)
+        for line in parse_setsumei_cell_lines(cell)
+    )
+    return _resolve_level_anchors(all_lines)
 
 
 def build_moku_record(
@@ -580,8 +639,12 @@ def build_moku_record(
     )
 
     setsu_groups = group_rows_by_setsu(idx, right_rows)
+
+    # Resolve setsumei anchors at moku level (説明 is 1:1 with 目)
+    code_to_name_offset, anchors = _moku_level_anchors(idx, setsu_groups)
+
     setsu_list = tuple(
-        build_setsu_record(idx, sr, cr)
+        build_setsu_record(idx, sr, cr, moku_anchors=anchors, moku_code_to_name_offset=code_to_name_offset)
         for sr, cr in setsu_groups
     )
 
