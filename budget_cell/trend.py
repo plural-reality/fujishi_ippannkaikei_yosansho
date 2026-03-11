@@ -301,11 +301,11 @@ def _max_path_depth(rows: Sequence[TrendRow]) -> int:
     return max((len(row.key.path_levels) for row in rows), default=1)
 
 
-def _base_headers(depth: int) -> tuple[str, ...]:
-    return ("款", "項", "目", "種別", *(f"項目L{i}" for i in range(1, depth + 1)))
+def _setsumei_headers(depth: int, years: Sequence[str]) -> tuple[str, ...]:
+    return ("款", "項", "目", *(f"説明L{i}" for i in range(1, depth + 1)), *years, "増減額", "増減率", "状態", "増減額順位")
 
 
-def _sheet_row(
+def _setsumei_sheet_row(
     row: TrendRow,
     depth: int,
     rank: int | None = None,
@@ -318,7 +318,6 @@ def _sheet_row(
         row.key.kan_name,
         row.key.kou_name,
         row.key.moku_name,
-        row.key.node_kind,
         *levels,
         *row.year_amounts,
         row.diff,
@@ -326,6 +325,102 @@ def _sheet_row(
         row.status,
         rank if rank is not None else "",
     )
+
+
+def _setsu_headers(years: Sequence[str]) -> tuple[str, ...]:
+    return ("款", "項", "目", "節", "小区分", *years, "増減額", "増減率", "状態", "増減額順位")
+
+
+def _setsu_sheet_row(
+    row: TrendRow,
+    rank: int | None = None,
+) -> tuple:
+    setsu_label = row.key.path_levels[0] if row.key.path_levels else ""
+    sub_item_name = row.key.path_levels[1] if len(row.key.path_levels) > 1 else ""
+    return (
+        row.key.kan_name,
+        row.key.kou_name,
+        row.key.moku_name,
+        setsu_label,
+        sub_item_name,
+        *row.year_amounts,
+        row.diff,
+        row.ratio if row.ratio is not None else "",
+        row.status,
+        rank if rank is not None else "",
+    )
+
+
+def _combined_headers(depth: int, years: Sequence[str]) -> tuple[str, ...]:
+    return (
+        "款",
+        "項",
+        "目",
+        "種別",
+        "節",
+        "小区分",
+        *(f"説明L{i}" for i in range(1, depth + 1)),
+        *years,
+        "増減額",
+        "増減率",
+        "状態",
+        "増減額順位",
+    )
+
+
+def _combined_sheet_row(
+    row: TrendRow,
+    depth: int,
+    rank: int | None = None,
+) -> tuple:
+    setsumei_levels = tuple(
+        row.key.path_levels[idx]
+        if row.key.node_kind == "説明" and idx < len(row.key.path_levels)
+        else ""
+        for idx in range(depth)
+    )
+    setsu_label = (
+        row.key.path_levels[0]
+        if row.key.node_kind in ("節", "小区分") and row.key.path_levels
+        else ""
+    )
+    sub_item_name = (
+        row.key.path_levels[1]
+        if row.key.node_kind == "小区分" and len(row.key.path_levels) > 1
+        else ""
+    )
+    return (
+        row.key.kan_name,
+        row.key.kou_name,
+        row.key.moku_name,
+        row.key.node_kind,
+        setsu_label,
+        sub_item_name,
+        *setsumei_levels,
+        *row.year_amounts,
+        row.diff,
+        row.ratio if row.ratio is not None else "",
+        row.status,
+        rank if rank is not None else "",
+    )
+
+
+def _selected_rows(
+    rows: Sequence[TrendRow],
+    node_kinds: frozenset[str],
+) -> tuple[TrendRow, ...]:
+    return tuple(row for row in rows if row.key.node_kind in node_kinds)
+
+
+def _write_ranked_sheet(
+    sheet,
+    rows: Sequence[TrendRow],
+    row_fn,
+) -> None:
+    for ri, row in enumerate(rows, 2):
+        values = row_fn(row, rank=ri - 1)
+        for ci, value in enumerate(values, 1):
+            sheet.cell(row=ri, column=ci, value=value)
 
 
 def write_trend_excel(
@@ -338,16 +433,29 @@ def write_trend_excel(
     from openpyxl.styles import Alignment, Font, PatternFill
 
     years, rows = aggregate_trends(nodes, match_id_fn=match_id_fn)
-    depth = _max_path_depth(rows)
-    headers = (*_base_headers(depth), *years, "増減額", "増減率", "状態", "増減額順位")
+    setsumei_rows = _selected_rows(rows, frozenset({"説明"}))
+    setsu_rows = _selected_rows(rows, frozenset({"節", "小区分"}))
+    setsumei_depth = _max_path_depth(setsumei_rows)
+    setsumei_headers = _setsumei_headers(setsumei_depth, years)
+    setsu_headers = _setsu_headers(years)
+    combined_headers = _combined_headers(setsumei_depth, years)
 
     workbook = openpyxl.Workbook()
-    sheet_changes = workbook.active
-    sheet_changes.title = "changes"
-    sheet_short = workbook.create_sheet("short")
-    sheet_up = workbook.create_sheet("top_up")
-    sheet_down = workbook.create_sheet("top_down")
-    sheet_raw = workbook.create_sheet("raw")
+    sheet_setsumei_changes = workbook.active
+    sheet_setsumei_changes.title = "setsumei_changes"
+    sheet_setsumei_short = workbook.create_sheet("setsumei_short")
+    sheet_setsumei_up = workbook.create_sheet("setsumei_top_up")
+    sheet_setsumei_down = workbook.create_sheet("setsumei_top_down")
+    sheet_setsu_changes = workbook.create_sheet("setsu_changes")
+    sheet_setsu_short = workbook.create_sheet("setsu_short")
+    sheet_setsu_up = workbook.create_sheet("setsu_top_up")
+    sheet_setsu_down = workbook.create_sheet("setsu_top_down")
+    sheet_combined_changes = workbook.create_sheet("combined_changes")
+    sheet_combined_short = workbook.create_sheet("combined_short")
+    sheet_combined_up = workbook.create_sheet("combined_top_up")
+    sheet_combined_down = workbook.create_sheet("combined_top_down")
+    sheet_raw_setsumei = workbook.create_sheet("raw_setsumei")
+    sheet_raw_setsu = workbook.create_sheet("raw_setsu")
 
     header_font = Font(bold=True)
     header_fill = PatternFill(start_color="DAEEF3", end_color="DAEEF3", fill_type="solid")
@@ -359,40 +467,80 @@ def write_trend_excel(
             cell.fill = header_fill
             cell.alignment = Alignment(horizontal="center")
 
-    write_header(sheet_changes, headers)
-    for ri, row in enumerate(rows, 2):
-        values = _sheet_row(row, depth, rank=ri - 1)
-        for ci, value in enumerate(values, 1):
-            sheet_changes.cell(row=ri, column=ci, value=value)
+    write_header(sheet_setsumei_changes, setsumei_headers)
+    _write_ranked_sheet(
+        sheet_setsumei_changes,
+        setsumei_rows,
+        lambda row, rank: _setsumei_sheet_row(row, setsumei_depth, rank=rank),
+    )
+    write_header(sheet_setsumei_short, setsumei_headers)
+    _write_ranked_sheet(
+        sheet_setsumei_short,
+        setsumei_rows[:top_n],
+        lambda row, rank: _setsumei_sheet_row(row, setsumei_depth, rank=rank),
+    )
+    write_header(sheet_setsumei_up, setsumei_headers)
+    _write_ranked_sheet(
+        sheet_setsumei_up,
+        tuple(row for row in setsumei_rows if row.diff > 0)[:top_n],
+        lambda row, rank: _setsumei_sheet_row(row, setsumei_depth, rank=rank),
+    )
+    write_header(sheet_setsumei_down, setsumei_headers)
+    _write_ranked_sheet(
+        sheet_setsumei_down,
+        tuple(row for row in setsumei_rows if row.diff < 0)[:top_n],
+        lambda row, rank: _setsumei_sheet_row(row, setsumei_depth, rank=rank),
+    )
 
-    short_rows = rows[:top_n]
-    write_header(sheet_short, headers)
-    for ri, row in enumerate(short_rows, 2):
-        values = _sheet_row(row, depth, rank=ri - 1)
-        for ci, value in enumerate(values, 1):
-            sheet_short.cell(row=ri, column=ci, value=value)
+    write_header(sheet_setsu_changes, setsu_headers)
+    _write_ranked_sheet(sheet_setsu_changes, setsu_rows, _setsu_sheet_row)
+    write_header(sheet_setsu_short, setsu_headers)
+    _write_ranked_sheet(sheet_setsu_short, setsu_rows[:top_n], _setsu_sheet_row)
+    write_header(sheet_setsu_up, setsu_headers)
+    _write_ranked_sheet(
+        sheet_setsu_up,
+        tuple(row for row in setsu_rows if row.diff > 0)[:top_n],
+        _setsu_sheet_row,
+    )
+    write_header(sheet_setsu_down, setsu_headers)
+    _write_ranked_sheet(
+        sheet_setsu_down,
+        tuple(row for row in setsu_rows if row.diff < 0)[:top_n],
+        _setsu_sheet_row,
+    )
 
-    top_up_rows = tuple(row for row in rows if row.diff > 0)[:top_n]
-    top_down_rows = tuple(row for row in rows if row.diff < 0)[:top_n]
+    write_header(sheet_combined_changes, combined_headers)
+    _write_ranked_sheet(
+        sheet_combined_changes,
+        rows,
+        lambda row, rank: _combined_sheet_row(row, setsumei_depth, rank=rank),
+    )
+    write_header(sheet_combined_short, combined_headers)
+    _write_ranked_sheet(
+        sheet_combined_short,
+        rows[:top_n],
+        lambda row, rank: _combined_sheet_row(row, setsumei_depth, rank=rank),
+    )
+    write_header(sheet_combined_up, combined_headers)
+    _write_ranked_sheet(
+        sheet_combined_up,
+        tuple(row for row in rows if row.diff > 0)[:top_n],
+        lambda row, rank: _combined_sheet_row(row, setsumei_depth, rank=rank),
+    )
+    write_header(sheet_combined_down, combined_headers)
+    _write_ranked_sheet(
+        sheet_combined_down,
+        tuple(row for row in rows if row.diff < 0)[:top_n],
+        lambda row, rank: _combined_sheet_row(row, setsumei_depth, rank=rank),
+    )
 
-    write_header(sheet_up, headers)
-    for ri, row in enumerate(top_up_rows, 2):
-        values = _sheet_row(row, depth, rank=ri - 1)
-        for ci, value in enumerate(values, 1):
-            sheet_up.cell(row=ri, column=ci, value=value)
-
-    write_header(sheet_down, headers)
-    for ri, row in enumerate(top_down_rows, 2):
-        values = _sheet_row(row, depth, rank=ri - 1)
-        for ci, value in enumerate(values, 1):
-            sheet_down.cell(row=ri, column=ci, value=value)
-
-    raw_headers = (
+    raw_setsumei_headers = (
         "年度", "款", "項", "目", "種別", "階層レベル", "項目", "項目パス", "金額",
         "節番号", "節名", "小区分", "事業コード",
     )
-    write_header(sheet_raw, raw_headers)
-    for ri, node in enumerate(nodes, 2):
+    write_header(sheet_raw_setsumei, raw_setsumei_headers)
+    setsumei_nodes = tuple(node for node in nodes if node.key.node_kind == "説明")
+    for ri, node in enumerate(setsumei_nodes, 2):
         values = (
             node.year,
             node.key.kan_name,
@@ -409,18 +557,54 @@ def write_trend_excel(
             node.setsumei_code,
         )
         for ci, value in enumerate(values, 1):
-            sheet_raw.cell(row=ri, column=ci, value=value)
+            sheet_raw_setsumei.cell(row=ri, column=ci, value=value)
 
-    ratio_col = len(headers) - 2
-    for sheet in (sheet_changes, sheet_short, sheet_up, sheet_down):
+    raw_setsu_headers = (
+        "年度", "款", "項", "目", "種別", "節", "小区分", "金額",
+        "節番号", "節名",
+    )
+    write_header(sheet_raw_setsu, raw_setsu_headers)
+    setsu_nodes = tuple(node for node in nodes if node.key.node_kind in ("節", "小区分"))
+    for ri, node in enumerate(setsu_nodes, 2):
+        values = (
+            node.year,
+            node.key.kan_name,
+            node.key.kou_name,
+            node.key.moku_name,
+            node.key.node_kind,
+            node.key.path_levels[0] if node.key.path_levels else "",
+            node.key.path_levels[1] if len(node.key.path_levels) > 1 else "",
+            node.amount,
+            node.setsu_number if node.setsu_number is not None else "",
+            node.setsu_name,
+        )
+        for ci, value in enumerate(values, 1):
+            sheet_raw_setsu.cell(row=ri, column=ci, value=value)
+
+    for sheet, headers in (
+        (sheet_setsumei_changes, setsumei_headers),
+        (sheet_setsumei_short, setsumei_headers),
+        (sheet_setsumei_up, setsumei_headers),
+        (sheet_setsumei_down, setsumei_headers),
+        (sheet_setsu_changes, setsu_headers),
+        (sheet_setsu_short, setsu_headers),
+        (sheet_setsu_up, setsu_headers),
+        (sheet_setsu_down, setsu_headers),
+        (sheet_combined_changes, combined_headers),
+        (sheet_combined_short, combined_headers),
+        (sheet_combined_up, combined_headers),
+        (sheet_combined_down, combined_headers),
+    ):
+        ratio_col = len(headers) - 2
         for ri in range(2, sheet.max_row + 1):
             cell = sheet.cell(row=ri, column=ratio_col)
             cell.number_format = "0.0%"
         sheet.auto_filter.ref = sheet.dimensions
         sheet.freeze_panes = "A2"
 
-    sheet_raw.auto_filter.ref = sheet_raw.dimensions
-    sheet_raw.freeze_panes = "A2"
+    for sheet in (sheet_raw_setsumei, sheet_raw_setsu):
+        sheet.auto_filter.ref = sheet.dimensions
+        sheet.freeze_panes = "A2"
     Path(dst_path).parent.mkdir(parents=True, exist_ok=True)
     workbook.save(dst_path)
 

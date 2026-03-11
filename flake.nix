@@ -58,17 +58,21 @@
           meta.description = "Run pytest";
         };
 
-        # nix run .#overlay -- <input.pdf> <output.pdf>
-        apps.overlay = mkPythonApp "overlay" "budget_cell.cli.overlay";
-        apps."excel-to-rows" = mkPythonApp "excel-to-rows" "budget_cell.cli.excel_to_rows";
-        apps."make-spread" = mkPythonApp "make-spread" "budget_cell.cli.make_spread";
-        apps."pdf-to-rows" = mkPythonApp "pdf-to-rows" "budget_cell.cli.pdf_to_rows";
-        apps."rows-ffill" = mkPythonApp "rows-ffill" "budget_cell.cli.rows_ffill";
-        apps."rows-to-excel" = mkPythonApp "rows-to-excel" "budget_cell.cli.rows_to_excel";
-        apps."to-excel" = mkPythonApp "to-excel" "budget_cell.cli.to_excel";
-        apps."trend-cell" = mkPythonApp "trend-cell" "budget_cell.cli.trend_cell";
-        apps."verify-excel" = mkPythonApp "verify-excel" "budget_cell.cli.verify_excel";
-        apps."visualize-geometry" = mkPythonApp "visualize-geometry" "budget_cell.cli.visualize_geometry";
+        # ── User-facing: long Excel as canonical hub ──
+        apps.pdf2long       = mkPythonApp "pdf2long"       "budget_cell.cli.pdf2long";
+        apps.long2short     = mkPythonApp "long2short"     "budget_cell.cli.long2short";
+        apps.long2trend     = mkPythonApp "long2trend"     "budget_cell.cli.long2trend";
+        apps.long2rows      = mkPythonApp "long2rows"      "budget_cell.cli.long2rows";
+        apps.visualize-geom = mkPythonApp "visualize-geom" "budget_cell.cli.visualize_geometry";
+        apps.make-spread    = mkPythonApp "make-spread"    "budget_cell.cli.make_spread";
+
+        # ── Low-level pipe primitives (internal / advanced) ──
+        apps.pdf-to-rows    = mkPythonApp "pdf-to-rows"    "budget_cell.cli.pdf_to_rows";
+        apps.rows-ffill     = mkPythonApp "rows-ffill"     "budget_cell.cli.rows_ffill";
+        apps.rows-to-excel  = mkPythonApp "rows-to-excel"  "budget_cell.cli.rows_to_excel";
+        apps.excel-to-rows  = mkPythonApp "excel-to-rows"  "budget_cell.cli.excel_to_rows";
+        apps.overlay        = mkPythonApp "overlay"         "budget_cell.cli.overlay";
+        apps.verify-excel   = mkPythonApp "verify-excel"   "budget_cell.cli.verify_excel";
 
         checks.pytest = mkCheck "budget-cell-pytest" ''
           ${pythonEnv}/bin/python -m pytest tests/ -q
