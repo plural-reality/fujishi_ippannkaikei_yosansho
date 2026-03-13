@@ -61,7 +61,7 @@
         # ── User-facing: long Excel as canonical hub ──
         apps.pdf2long       = mkPythonApp "pdf2long"       "budget_cell.cli.pdf2long";
         apps.long2short     = mkPythonApp "long2short"     "budget_cell.cli.long2short";
-        apps.long2trend     = mkPythonApp "long2trend"     "budget_cell.cli.long2trend";
+        apps.long2comparison = mkPythonApp "long2comparison" "budget_cell.cli.long2comparison";
         apps.long2rows      = mkPythonApp "long2rows"      "budget_cell.cli.long2rows";
         apps.visualize-geom = mkPythonApp "visualize-geom" "budget_cell.cli.visualize_geometry";
         apps.make-spread    = mkPythonApp "make-spread"    "budget_cell.cli.make_spread";

@@ -1,5 +1,5 @@
 """
-Year-over-year trend representation from Excel-derived FlatRow streams.
+Year-over-year comparison representation from Excel-derived FlatRow streams.
 
 This module is intentionally decoupled from PDF extraction.
 Input contract: FlatRow sequence only.
@@ -16,7 +16,7 @@ from budget_cell.types import FlatRow
 
 
 @dataclass(frozen=True)
-class TrendKey:
+class ComparisonKey:
     kan_name: str
     kou_name: str
     moku_name: str
@@ -25,9 +25,9 @@ class TrendKey:
 
 
 @dataclass(frozen=True)
-class TrendNode:
+class ComparisonNode:
     year: str
-    key: TrendKey
+    key: ComparisonKey
     setsu_number: int | None
     setsu_name: str
     sub_item_name: str
@@ -38,15 +38,15 @@ class TrendNode:
 
 
 @dataclass(frozen=True)
-class TrendRow:
-    key: TrendKey
+class ComparisonRow:
+    key: ComparisonKey
     year_amounts: tuple[int, ...]
     diff: int
     ratio: float | None
     status: str
 
 
-MatchIdFn = Callable[[TrendKey], str]
+MatchIdFn = Callable[[ComparisonKey], str]
 
 _NODE_KIND_ORDER = {
     "節": 0,
@@ -99,14 +99,15 @@ def _path_from_levels(levels: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(item for item in levels if item)
 
 
-def rows_to_trend_nodes(
+def rows_to_comparison_nodes(
     year: str,
     rows: Sequence[FlatRow],
-) -> tuple[TrendNode, ...]:
-    path_state: dict[tuple[str, str, str, int | None, str, str], tuple[str, ...]] = {}
-    setsu_nodes: dict[tuple[str, str, str, int | None, str], TrendNode] = {}
-    sub_item_nodes: dict[tuple[str, str, str, int | None, str, str], TrendNode] = {}
-    setsumei_nodes: list[TrendNode] = []
+) -> tuple[ComparisonNode, ...]:
+    # Fallback path state for legacy Excel without setsumei_path
+    fallback_state: dict[tuple[str, str, str], tuple[str, ...]] = {}
+    setsu_nodes: dict[tuple[str, str, str, int | None, str], ComparisonNode] = {}
+    sub_item_nodes: dict[tuple[str, str, str, int | None, str, str], ComparisonNode] = {}
+    setsumei_nodes: list[ComparisonNode] = []
     for row in rows:
         kan_name = _clean_text(row.kan_name)
         kou_name = _clean_text(row.kou_name)
@@ -116,19 +117,12 @@ def rows_to_trend_nodes(
         name = _clean_text(row.setsumei_name)
         level = _level_or_default(row.setsumei_level)
         setsu_path = tuple((label,)) if (label := _setsu_label(row.setsu_number, setsu_name)) else ()
-        # 説明 is 1:1 with 目 — path state keyed by (moku, code), not (moku, setsu, code)
-        context_key = (
-            kan_name,
-            kou_name,
-            moku_name,
-            _clean_text(row.setsumei_code),
-        )
         _ = (
             setsu_nodes.setdefault(
                 (kan_name, kou_name, moku_name, row.setsu_number, setsu_name),
-                TrendNode(
+                ComparisonNode(
                     year=year,
-                    key=TrendKey(
+                    key=ComparisonKey(
                         kan_name=kan_name,
                         kou_name=kou_name,
                         moku_name=moku_name,
@@ -150,9 +144,9 @@ def rows_to_trend_nodes(
         _ = (
             sub_item_nodes.setdefault(
                 (kan_name, kou_name, moku_name, row.setsu_number, setsu_name, sub_item_name),
-                TrendNode(
+                ComparisonNode(
                     year=year,
-                    key=TrendKey(
+                    key=ComparisonKey(
                         kan_name=kan_name,
                         kou_name=kou_name,
                         moku_name=moku_name,
@@ -171,27 +165,45 @@ def rows_to_trend_nodes(
             if sub_item_name and row.sub_item_amount is not None
             else None
         )
-        next_levels = (
-            _advance_path(path_state.get(context_key, ()), level, name)
-            if name
-            else path_state.get(context_key, ())
+        # Use parse-layer path if available; fallback to _advance_path for legacy Excel
+        setsumei_path = row.setsumei_path if hasattr(row, "setsumei_path") and row.setsumei_path else ()
+        path_levels = (
+            setsumei_path
+            if setsumei_path
+            else (
+                _path_from_levels(
+                    _advance_path(
+                        fallback_state.get((kan_name, kou_name, moku_name), ()),
+                        level,
+                        name,
+                    )
+                )
+                if name
+                else _path_from_levels(fallback_state.get((kan_name, kou_name, moku_name), ()))
+            )
         )
-        path_state[context_key] = next_levels
+        # Update fallback state (keyed by moku only, not by code)
+        fallback_key = (kan_name, kou_name, moku_name)
+        fallback_state[fallback_key] = (
+            _advance_path(fallback_state.get(fallback_key, ()), level, name)
+            if name
+            else fallback_state.get(fallback_key, ())
+        )
         amount = row.setsumei_amount
         setsumei_nodes.append(
-            TrendNode(
+            ComparisonNode(
                 year=year,
-                key=TrendKey(
-                    kan_name=context_key[0],
-                    kou_name=context_key[1],
-                    moku_name=context_key[2],
+                key=ComparisonKey(
+                    kan_name=kan_name,
+                    kou_name=kou_name,
+                    moku_name=moku_name,
                     node_kind="説明",
-                    path_levels=_path_from_levels(next_levels),
+                    path_levels=path_levels,
                 ),
                 setsu_number=row.setsu_number,
                 setsu_name=setsu_name,
                 sub_item_name="",
-                setsumei_code=context_key[3],
+                setsumei_code=_clean_text(row.setsumei_code),
                 setsumei_level=level,
                 item_name=name,
                 amount=amount if amount is not None else 0,
@@ -222,11 +234,11 @@ def _ratio(base: int, diff: int) -> float | None:
     return None if base == 0 else diff / base
 
 
-def trend_key_match_id_strict(key: TrendKey) -> str:
+def comparison_key_match_id_strict(key: ComparisonKey) -> str:
     return "|".join((key.kan_name, key.kou_name, key.moku_name, key.node_kind, *key.path_levels))
 
 
-def _trend_key_sort_fields(key: TrendKey) -> tuple[str, str, str, int, tuple[str, ...]]:
+def _comparison_key_sort_fields(key: ComparisonKey) -> tuple[str, str, str, int, tuple[str, ...]]:
     return (
         key.kan_name,
         key.kou_name,
@@ -236,23 +248,23 @@ def _trend_key_sort_fields(key: TrendKey) -> tuple[str, str, str, int, tuple[str
     )
 
 
-def _representative_key(variants: Mapping[TrendKey, int]) -> TrendKey:
+def _representative_key(variants: Mapping[ComparisonKey, int]) -> ComparisonKey:
     ranked = tuple(
         sorted(
             variants.items(),
-            key=lambda item: (-item[1], _trend_key_sort_fields(item[0])),
+            key=lambda item: (-item[1], _comparison_key_sort_fields(item[0])),
         )
     )
     return ranked[0][0]
 
 
-def aggregate_trends(
-    nodes: Sequence[TrendNode],
-    match_id_fn: MatchIdFn = trend_key_match_id_strict,
-) -> tuple[tuple[str, ...], tuple[TrendRow, ...]]:
+def aggregate_comparisons(
+    nodes: Sequence[ComparisonNode],
+    match_id_fn: MatchIdFn = comparison_key_match_id_strict,
+) -> tuple[tuple[str, ...], tuple[ComparisonRow, ...]]:
     years = tuple(sorted({node.year for node in nodes}, key=_year_sort_key))
     key_year_sum: dict[tuple[str, str], int] = {}
-    key_variants: dict[str, dict[TrendKey, int]] = {}
+    key_variants: dict[str, dict[ComparisonKey, int]] = {}
     for node in nodes:
         match_id = match_id_fn(node.key)
         index = (match_id, node.year)
@@ -267,7 +279,7 @@ def aggregate_trends(
     match_ids = tuple(
         sorted(
             representative_keys.keys(),
-            key=lambda match_id: _trend_key_sort_fields(representative_keys[match_id]),
+            key=lambda match_id: _comparison_key_sort_fields(representative_keys[match_id]),
         )
     )
     keys = tuple(
@@ -276,7 +288,7 @@ def aggregate_trends(
     )
     rows = tuple(
         (
-            lambda amounts: TrendRow(
+            lambda amounts: ComparisonRow(
                 key=key,
                 year_amounts=amounts,
                 diff=amounts[-1] - amounts[0],
@@ -296,7 +308,7 @@ def aggregate_trends(
     return years, ranked
 
 
-def _max_path_depth(rows: Sequence[TrendRow]) -> int:
+def _max_path_depth(rows: Sequence[ComparisonRow]) -> int:
     return max((len(row.key.path_levels) for row in rows), default=1)
 
 
@@ -305,7 +317,7 @@ def _setsumei_headers(depth: int, years: Sequence[str]) -> tuple[str, ...]:
 
 
 def _setsumei_sheet_row(
-    row: TrendRow,
+    row: ComparisonRow,
     depth: int,
     rank: int | None = None,
 ) -> tuple:
@@ -331,7 +343,7 @@ def _setsu_headers(years: Sequence[str]) -> tuple[str, ...]:
 
 
 def _setsu_sheet_row(
-    row: TrendRow,
+    row: ComparisonRow,
     rank: int | None = None,
 ) -> tuple:
     setsu_label = row.key.path_levels[0] if row.key.path_levels else ""
@@ -368,7 +380,7 @@ def _combined_headers(depth: int, years: Sequence[str]) -> tuple[str, ...]:
 
 
 def _combined_sheet_row(
-    row: TrendRow,
+    row: ComparisonRow,
     depth: int,
     rank: int | None = None,
 ) -> tuple:
@@ -405,15 +417,15 @@ def _combined_sheet_row(
 
 
 def _selected_rows(
-    rows: Sequence[TrendRow],
+    rows: Sequence[ComparisonRow],
     node_kinds: frozenset[str],
-) -> tuple[TrendRow, ...]:
+) -> tuple[ComparisonRow, ...]:
     return tuple(row for row in rows if row.key.node_kind in node_kinds)
 
 
 def _write_ranked_sheet(
     sheet,
-    rows: Sequence[TrendRow],
+    rows: Sequence[ComparisonRow],
     row_fn,
 ) -> None:
     for ri, row in enumerate(rows, 2):
@@ -422,16 +434,16 @@ def _write_ranked_sheet(
             sheet.cell(row=ri, column=ci, value=value)
 
 
-def write_trend_excel(
+def write_comparison_excel(
     dst_path: str,
-    nodes: Sequence[TrendNode],
+    nodes: Sequence[ComparisonNode],
     top_n: int = 200,
-    match_id_fn: MatchIdFn = trend_key_match_id_strict,
+    match_id_fn: MatchIdFn = comparison_key_match_id_strict,
 ) -> None:
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
 
-    years, rows = aggregate_trends(nodes, match_id_fn=match_id_fn)
+    years, rows = aggregate_comparisons(nodes, match_id_fn=match_id_fn)
     setsumei_rows = _selected_rows(rows, frozenset({"説明"}))
     setsu_rows = _selected_rows(rows, frozenset({"節", "小区分"}))
     setsumei_depth = _max_path_depth(setsumei_rows)
@@ -611,9 +623,9 @@ def write_trend_excel(
 def load_year_excel_nodes(
     year_to_path: Mapping[str, str],
     read_rows_fn,
-) -> tuple[TrendNode, ...]:
+) -> tuple[ComparisonNode, ...]:
     return tuple(
         node
         for year, path in year_to_path.items()
-        for node in rows_to_trend_nodes(year, read_rows_fn(path))
+        for node in rows_to_comparison_nodes(year, read_rows_fn(path))
     )

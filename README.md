@@ -10,7 +10,7 @@ long Excel を hub とし、全ての変換はここを経由します。
 PDF ──→ pdf2long ──→ long Excel (canonical)
                          │
                          ├──→ long2short  ──→ short Excel (人間閲覧用)
-                         ├──→ long2trend  ──→ trend Excel (年度比較)
+                         ├──→ long2comparison ──→ comparison Excel (年度比較)
                          └──→ long2rows   ──→ NDJSON (パイプ用)
 ```
 
@@ -18,16 +18,17 @@ PDF ──→ pdf2long ──→ long Excel (canonical)
 
 ```bash
 # PDF → long Excel (正準フォーマット)
-nix run .#pdf2long -- inputs/r8-budget.pdf result/r8-long.xlsx
+nix run .#pd
+f2long -- inputs/r8-budget.pdf result/r8-long.xlsx
 
 # long → short (ワイド表示)
 nix run .#long2short -- result/r8-long.xlsx result/r8-short.xlsx
 
 # 年度比較
-nix run .#long2trend -- \
+nix run .#long2comparison -- \
   --input R6=tests/fixtures/r6/expected/budget-spread-long.xlsx \
   --input R8=tests/fixtures/r8/expected/budget-long-ffill.xlsx \
-  result/r6-r8-trend.xlsx
+  result/r6-r8-comparison.xlsx
 
 # long → NDJSON パイプ
 nix run .#long2rows -- result/r8-long.xlsx | jq '.kan_name'
@@ -95,7 +96,7 @@ nix run .#verify-excel -- tests/fixtures/r6/expected/budget-spread-short.xlsx
   - `checks.r6-pdf-to-short-regression`
 - `inputs/*.pdf` — 通常入力として扱う元 PDF
 - `tests/fixtures/r6/` — `input/` は回帰テスト用入力、`expected/` は golden workbook
-- `tests/fixtures/r8/expected/budget-long-ffill.xlsx` — 比較表生成の基準に使う R8 workbook
+- `tests/fixtures/r8/expected/budget-long-ffill.xlsx` — comparison 生成の基準に使う R8 workbook
 - `result/` — 実行生成物の退避先。Git 管理外
 
 詳細な依存グラフとモジュール境界は `docs/ARCHITECTURE.md` を参照してください。

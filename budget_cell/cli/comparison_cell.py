@@ -1,5 +1,5 @@
 """
-CLI: build year-over-year trend Excel from year-labeled input Excels.
+CLI: build year-over-year comparison Excel from year-labeled input Excels.
 
 Decoupled by design:
   input contract is only Excel files (no PDF/pipeline dependency).
@@ -12,7 +12,7 @@ import sys
 
 from budget_cell.excel_io import read_rows_from_excel_path
 from budget_cell.matchers import MATCHERS
-from budget_cell.trend import load_year_excel_nodes, write_trend_excel
+from budget_cell.comparison import load_year_excel_nodes, write_comparison_excel
 
 
 def _parse_year_input(raw: str) -> tuple[str, str]:
@@ -31,8 +31,8 @@ def _collect_year_inputs(values: tuple[str, ...]) -> dict[str, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="python -m budget_cell.cli.trend_cell",
-        description="Create YoY trend Excel from year-tagged input Excels.",
+        prog="python -m budget_cell.cli.comparison_cell",
+        description="Create YoY comparison Excel from year-tagged input Excels.",
     )
     parser.add_argument(
         "--input",
@@ -59,13 +59,13 @@ def main() -> None:
         raise SystemExit("need at least 2 --input YEAR=PATH values")
 
     nodes = load_year_excel_nodes(year_to_path, read_rows_from_excel_path)
-    write_trend_excel(
+    write_comparison_excel(
         args.dst,
         nodes,
         top_n=args.top_n,
         match_id_fn=MATCHERS[args.matcher],
     )
-    print(f"Wrote trend workbook: {args.dst}")
+    print(f"Wrote comparison workbook: {args.dst}")
 
 
 if __name__ == "__main__":

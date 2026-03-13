@@ -1,9 +1,9 @@
 """
-CLI: long Excel x N -> trend comparison Excel.
+CLI: long Excel x N -> comparison Excel.
 
-Consumes multiple year-labeled long Excels and produces a trend workbook.
+Consumes multiple year-labeled long Excels and produces a comparison workbook.
 
-  nix run .#long2trend -- --input R6=r6.xlsx --input R8=r8.xlsx out.xlsx
+  nix run .#long2comparison -- --input R6=r6.xlsx --input R8=r8.xlsx out.xlsx
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ import sys
 
 from budget_cell.excel_io import read_rows_from_excel_path
 from budget_cell.matchers import MATCHERS
-from budget_cell.trend import load_year_excel_nodes, write_trend_excel
+from budget_cell.comparison import load_year_excel_nodes, write_comparison_excel
 
 
 _parse_year_input = lambda raw: (
@@ -24,8 +24,8 @@ _parse_year_input = lambda raw: (
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        prog="long2trend",
-        description="Create year-over-year trend workbook from long-format Excels.",
+        prog="long2comparison",
+        description="Create year-over-year comparison workbook from long-format Excels.",
     )
     parser.add_argument(
         "--input",
@@ -57,13 +57,13 @@ def main() -> None:
     _ = len(year_to_path) >= 2 or sys.exit("need at least 2 --input YEAR=PATH values")
 
     nodes = load_year_excel_nodes(year_to_path, read_rows_from_excel_path)
-    write_trend_excel(
+    write_comparison_excel(
         args.dst,
         nodes,
         top_n=args.top_n,
         match_id_fn=MATCHERS[args.matcher],
     )
-    print(f"Wrote trend workbook: {args.dst}", file=sys.stderr)
+    print(f"Wrote comparison workbook: {args.dst}", file=sys.stderr)
 
 
 if __name__ == "__main__":

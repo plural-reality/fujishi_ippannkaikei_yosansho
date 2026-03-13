@@ -1,5 +1,5 @@
 """
-Pluggable key matchers for trend aggregation.
+Pluggable key matchers for comparison aggregation.
 """
 
 from __future__ import annotations
@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from budget_cell.trend import MatchIdFn, TrendKey, trend_key_match_id_strict
+from budget_cell.comparison import MatchIdFn, ComparisonKey, comparison_key_match_id_strict
 
 _SPACE_RE = re.compile(r"\s+")
 _PUNCT_RE = re.compile(r"[・･/／\\,，、\-−ー―()（）「」『』【】［］\[\]：:;；]")
@@ -25,7 +25,7 @@ def _normalize_token(value: str) -> str:
     return no_punct.translate(_VARIANT_MAP)
 
 
-def trend_key_match_id_loose(key: TrendKey) -> str:
+def comparison_key_match_id_loose(key: ComparisonKey) -> str:
     return "|".join(
         (
             _normalize_token(key.kan_name),
@@ -38,6 +38,6 @@ def trend_key_match_id_loose(key: TrendKey) -> str:
 
 
 MATCHERS: dict[str, MatchIdFn] = {
-    "strict": trend_key_match_id_strict,
-    "loose": trend_key_match_id_loose,
+    "strict": comparison_key_match_id_strict,
+    "loose": comparison_key_match_id_loose,
 }

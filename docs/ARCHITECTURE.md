@@ -373,7 +373,7 @@ budget_cell/
     ├── rows_ffill.py        NDJSON stdin → NDJSON stdout（前方充填）
     ├── rows_to_excel.py     NDJSON stdin → Excel sink（wide/long）
     ├── to_excel.py          互換ラッパ（上記3段を同一プロセスで合成）
-    ├── trend_cell.py        年度比較 workbook 生成
+    ├── comparison_cell.py   年度比較 workbook 生成
     ├── verify_excel.py      FlatRow workbook 契約検証
     └── visualize_geometry.py PDF 幾何可視化
 
