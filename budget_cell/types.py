@@ -91,6 +91,7 @@ class SetsumeiEntry:
     name: str
     amount: int | None
     level: int = 1
+    path: tuple[str, ...] = ()  # ("L1名", "L2名", ...) 完全パス — parse層で確定
 
 
 @dataclass(frozen=True)
@@ -156,3 +157,4 @@ class FlatRow:
     setsumei_level: int | None
     setsumei_name: str
     setsumei_amount: int | None
+    setsumei_path: tuple[str, ...] = ()  # 説明の完全パス — parse層由来
