@@ -73,6 +73,7 @@ def _headers_long() -> tuple[str, ...]:
         "説明レベル",
         "説明",
         "説明金額",
+        "説明パス",
     )
 
 
@@ -126,6 +127,7 @@ def _row_long_tuple(row: FlatRow) -> tuple:
         row.setsumei_level if row.setsumei_level is not None else "",
         row.setsumei_name,
         row.setsumei_amount if row.setsumei_amount is not None else "",
+        " > ".join(row.setsumei_path) if row.setsumei_path else "",
     )
 
 
@@ -248,6 +250,8 @@ def _row_from_excel(
         if layout == "wide"
         else _flat_setsumei(row, header_to_index)
     )
+    raw_path = _to_text(_field_value(row, header_to_index, "説明パス"))
+    setsumei_path = tuple(raw_path.split(" > ")) if raw_path else ()
     return FlatRow(
         kan_name=_to_text(_field_value(row, header_to_index, "款")),
         kou_name=_to_text(_field_value(row, header_to_index, "項")),
@@ -268,6 +272,7 @@ def _row_from_excel(
         setsumei_level=setsumei_level,
         setsumei_name=setsumei_name,
         setsumei_amount=_to_int(_field_value(row, header_to_index, "説明金額")),
+        setsumei_path=setsumei_path,
     )
 
 

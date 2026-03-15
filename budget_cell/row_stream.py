@@ -22,6 +22,9 @@ def flat_row_to_mapping(row: FlatRow) -> dict[str, object]:
 
 def mapping_to_flat_row(raw: Mapping[str, object]) -> FlatRow:
     payload = {name: raw.get(name) for name in FLAT_ROW_FIELDS}
+    # JSON deserializes tuples as lists — coerce back
+    raw_path = payload.get("setsumei_path")
+    payload["setsumei_path"] = tuple(raw_path) if isinstance(raw_path, list) else (raw_path or ())
     return FlatRow(**payload)
 
 
