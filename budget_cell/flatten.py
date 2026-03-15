@@ -15,6 +15,7 @@ from dataclasses import replace
 from itertools import groupby
 from typing import Callable, Hashable, Sequence
 
+from budget_cell.parse import _advance_setsumei_path
 from budget_cell.types import (
     FlatRow,
     MokuRecord,
@@ -79,6 +80,7 @@ def _setsumei_row(
         setsumei_level=entry.level,
         setsumei_name=entry.name,
         setsumei_amount=entry.amount,
+        setsumei_path=entry.path,
     )
 
 
@@ -255,6 +257,53 @@ def sectioned_ffill(
         row
         for _, group in groupby(rows, key=key_fn)
         for row in ffill(tuple(group), fields)
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. Setsumei path assignment (post-ffill scanl by moku group)
+# ---------------------------------------------------------------------------
+
+def _level_or_default(value: int | None) -> int:
+    return value if value and value > 0 else 1
+
+
+def assign_setsumei_paths(
+    rows: Sequence[FlatRow],
+) -> tuple[FlatRow, ...]:
+    """Walk FlatRows grouped by (kan, kou, moku) and assign setsumei_path.
+
+    Must be called AFTER ffill so that orphan rows have correct moku context.
+    Rows that already have a path (from parse layer) keep it; only empty paths
+    are computed from level + running state.
+    """
+    path_state: dict[tuple[str, str, str], tuple[str, ...]] = {}
+    return tuple(
+        (
+            lambda key, name, level: (
+                lambda current_path: (
+                    # Side-effectful update of path_state via dict.__setitem__
+                    # Safe because we process rows sequentially
+                    path_state.__setitem__(key, current_path) or  # always None
+                    replace(row, setsumei_path=current_path)
+                )
+            )(
+                row.setsumei_path
+                if row.setsumei_path
+                else (
+                    _advance_setsumei_path(path_state.get(key, ()), level, name)
+                    if name
+                    else path_state.get(key, ())
+                )
+            )
+        )(
+            (row.kan_name, row.kou_name, row.moku_name),
+            row.setsumei_name.strip(),
+            _level_or_default(row.setsumei_level),
+        )
+        if row.setsumei_name.strip()
+        else row
+        for row in rows
     )
 
 
