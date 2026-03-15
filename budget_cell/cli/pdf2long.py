@@ -13,7 +13,7 @@ import argparse
 import sys
 
 from budget_cell.excel_io import write_rows_to_excel_path
-from budget_cell.flatten import FFILL_FIELDS, sectioned_ffill
+from budget_cell.flatten import FFILL_FIELDS, assign_setsumei_paths, sectioned_ffill
 from budget_cell.pipeline import rows_from_pdf
 from budget_cell.types import FlatRow
 
@@ -37,11 +37,12 @@ def main() -> None:
 
     print(f"Extracting: {args.src}", file=sys.stderr)
     raw_rows = rows_from_pdf(args.src, logger=lambda msg: print(f"  {msg}", file=sys.stderr), ffill_fields=None)
-    rows = (
+    filled_rows = (
         raw_rows
         if args.no_ffill
         else sectioned_ffill(raw_rows, FFILL_FIELDS, key_fn=_section_key)
     )
+    rows = assign_setsumei_paths(filled_rows)
     write_rows_to_excel_path(rows, args.dst, layout="long")
     print(f"Wrote long Excel ({len(rows)} rows): {args.dst}", file=sys.stderr)
 

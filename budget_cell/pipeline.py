@@ -12,7 +12,7 @@ from typing import Callable, Sequence
 
 from budget_cell.cells import assign_words_to_cells
 from budget_cell.extract import extract_all_geometries
-from budget_cell.flatten import flatten_all_pages, ffill, label_section
+from budget_cell.flatten import assign_setsumei_paths, flatten_all_pages, ffill, label_section
 from budget_cell.geometry_normalize import normalize_page_geometries
 from budget_cell.grid import build_grid, extract_expenditure_pages
 from budget_cell.header import parse_page_header

@@ -13,7 +13,7 @@ import argparse
 import sys
 
 from budget_cell.excel_io import OutputLayout, write_rows_to_excel_path
-from budget_cell.flatten import FFILL_FIELDS, sectioned_ffill
+from budget_cell.flatten import FFILL_FIELDS, assign_setsumei_paths, sectioned_ffill
 from budget_cell.pipeline import rows_from_pdf
 from budget_cell.types import FlatRow
 
@@ -37,11 +37,12 @@ def process_pdf_to_excel(
     ffill_fields: tuple[str, ...] | None = FFILL_FIELDS,
 ) -> None:
     rows = rows_from_pdf(src_path, logger=print, ffill_fields=None)
-    final_rows = (
+    filled_rows = (
         sectioned_ffill(rows, ffill_fields, key_fn=_section_key)
         if ffill_fields
         else rows
     )
+    final_rows = assign_setsumei_paths(filled_rows)
     print(f"Writing Excel ({layout}): {dst_path}")
     write_rows_to_excel_path(final_rows, dst_path, layout=layout)
     print("Done.")
