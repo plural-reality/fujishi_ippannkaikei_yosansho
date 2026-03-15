@@ -720,6 +720,65 @@ def _moku_level_anchors(
     return _resolve_level_anchors(all_lines)
 
 
+def _advance_setsumei_path(
+    previous: tuple[str, ...],
+    level: int,
+    name: str,
+) -> tuple[str, ...]:
+    """Compute the full path for a setsumei entry based on running state.
+
+    Level 1 resets the path. Level 2+ inherits ancestors from previous state.
+    Returns a tuple like ("L1名",) or ("L1名", "L2名").
+    """
+    size = max(len(previous), level)
+    padded = tuple(
+        previous[idx] if idx < len(previous) else ""
+        for idx in range(size)
+    )
+    raw = tuple(
+        name if idx == level - 1 else padded[idx] if idx < level - 1 else ""
+        for idx in range(size)
+    )
+    # Strip trailing empties to get clean path
+    return tuple(item for item in raw if item)
+
+
+def _assign_setsumei_paths(
+    setsu_list: tuple[SetsuRecord, ...],
+) -> tuple[SetsuRecord, ...]:
+    """Walk all setsumei entries across all setsu (in order) within one moku,
+    compute hierarchical paths based on level, and return updated SetsuRecords.
+
+    説明 is 1:1 with 目 — path state spans across 節 boundaries.
+    """
+    # Collect (setsu_idx, entry_idx, entry) triples
+    all_entries = tuple(
+        (si, ei, entry)
+        for si, setsu in enumerate(setsu_list)
+        for ei, entry in enumerate(setsu.setsumei)
+    )
+
+    # scanl: accumulate running path state
+    path_state: tuple[str, ...] = ()
+    path_map: dict[tuple[int, int], tuple[str, ...]] = {}
+    for si, ei, entry in all_entries:
+        path_state = (
+            _advance_setsumei_path(path_state, entry.level, entry.name)
+            if entry.name
+            else path_state
+        )
+        path_map[(si, ei)] = path_state
+
+    # Rebuild setsu_list with path-annotated entries
+    return tuple(
+        replace(setsu, setsumei=tuple(
+            replace(entry, path=path_map.get((si, ei), ()))
+            for ei, entry in enumerate(setsu.setsumei)
+        ))
+        for si, setsu in enumerate(setsu_list)
+    )
+
+
 def build_moku_record(
     idx: CellIndex,
     moku_row: int,
@@ -736,10 +795,10 @@ def build_moku_record(
     # Resolve setsumei anchors at moku level (説明 is 1:1 with 目)
     code_to_name_offset, anchors = _moku_level_anchors(idx, setsu_groups)
 
-    setsu_list = tuple(
+    setsu_list = _assign_setsumei_paths(tuple(
         build_setsu_record(idx, sr, cr, moku_anchors=anchors, moku_code_to_name_offset=code_to_name_offset)
         for sr, cr in setsu_groups
-    )
+    ))
 
     return MokuRecord(
         name=text_at(idx, moku_row, COL_MOKU) or "",
