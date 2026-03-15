@@ -58,6 +58,11 @@ def _footer_page_hits(rows: tuple[FlatRow, ...]) -> tuple[tuple[int, FlatRow], .
     )
 
 
+def _strip_path(row: FlatRow) -> FlatRow:
+    """Strip setsumei_path for comparison with pre-path Excel fixtures."""
+    return replace(row, setsumei_path=())
+
+
 def _normalize_for_wide_projection(row: FlatRow) -> FlatRow:
     return replace(row, setsumei_level=row.setsumei_level if row.setsumei_name else None)
 
@@ -87,8 +92,8 @@ def test_r6_long_workbook_has_no_footer_page_numbers_in_setsumei() -> None:
 
 
 def test_r6_long_workbook_matches_current_pdf_pipeline_exactly() -> None:
-    assert _long_rows() == _pdf_rows()
+    assert _long_rows() == tuple(map(_strip_path, _pdf_rows()))
 
 
 def test_r6_short_workbook_matches_current_pdf_pipeline_after_wide_normalization() -> None:
-    assert tuple(map(_normalize_for_wide_projection, _pdf_rows())) == _short_rows()
+    assert tuple(map(lambda r: _strip_path(_normalize_for_wide_projection(r)), _pdf_rows())) == _short_rows()
